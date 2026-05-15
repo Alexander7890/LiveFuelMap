@@ -1,0 +1,11 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/LiveFuelMap.Api/LiveFuelMap.Api.csproj" />
+    <Project Path="src/LiveFuelMap.BLL/LiveFuelMap.BLL.csproj" />
+    <Project Path="src/LiveFuelMap.DAL/LiveFuelMap.DAL.csproj" />
+    <Project Path="src/LiveFuelMap.Infrastructure/LiveFuelMap.Infrastructure.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/LiveFuelMap.Tests/LiveFuelMap.Tests.csproj" />
+  </Folder>
+</Solution>

@@ -1,0 +1,62 @@
+services:
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_DATABASE: ${DB_NAME:-LiveFuelMap}
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-change_me}
+    ports:
+      - "${DB_PORT:-3306}:3306"
+    volumes:
+      - livefuelmap_mysql:/var/lib/mysql
+
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "${OLLAMA_PORT:-11434}:11434"
+    volumes:
+      - livefuelmap_ollama:/root/.ollama
+
+  api:
+    build:
+      context: .
+      dockerfile: src/LiveFuelMap.Api/Dockerfile
+    depends_on:
+      - mysql
+      - ollama
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ConnectionStrings__Default: server=mysql;port=3306;database=${DB_NAME:-LiveFuelMap};user=root;password=${DB_PASSWORD:-change_me};SslMode=None;AllowPublicKeyRetrieval=True;
+      Jwt__Secret: ${JWT_SECRET:-change_me_change_me_change_me_change_me}
+      Frontend__ApiBaseUrl: http://localhost:${PORT:-5000}
+      Ai__Provider: Ollama
+      Ai__Model: ${AI_MODEL:-mistral}
+      Ai__Endpoint: http://ollama:11434/api/generate
+      Ai__TimeoutSeconds: ${AI_TIMEOUT:-60}
+      Chat__RateLimitPerMinute: ${CHAT_RATE_LIMIT:-20}
+      Chat__MaxMessageLength: ${CHAT_MAX_MESSAGE_LENGTH:-1000}
+      ApiSecurity__RateLimit__Enabled: ${API_RATE_LIMIT_ENABLED:-true}
+      ApiSecurity__RateLimit__ReadPermitLimit: ${API_RATE_LIMIT_READ_PER_MINUTE:-120}
+      ApiSecurity__RateLimit__WritePermitLimit: ${API_RATE_LIMIT_WRITE_PER_MINUTE:-40}
+      ApiSecurity__RateLimit__WindowSeconds: ${API_RATE_LIMIT_WINDOW_SECONDS:-60}
+      ApiSecurity__RateLimit__QueueLimit: ${API_RATE_LIMIT_QUEUE_LIMIT:-20}
+      ApiSecurity__Idempotency__Enabled: ${IDEMPOTENCY_ENABLED:-true}
+      ApiSecurity__Idempotency__HeaderName: ${IDEMPOTENCY_HEADER_NAME:-Idempotency-Key}
+      ApiSecurity__Idempotency__KeyTtlMinutes: ${IDEMPOTENCY_TTL_MINUTES:-60}
+      ApiSecurity__Idempotency__MaxBodyBytes: ${IDEMPOTENCY_MAX_BODY_BYTES:-1048576}
+      ExternalContext__Enabled: ${EXTERNAL_CONTEXT_ENABLED:-true}
+      ExternalContext__TimeoutSeconds: ${EXTERNAL_CONTEXT_TIMEOUT:-15}
+      ExternalContext__UserAgent: ${EXTERNAL_CONTEXT_USER_AGENT:-LiveFuelMap/1.0 local diploma project}
+      ExternalContext__NominatimEndpoint: ${NOMINATIM_ENDPOINT:-https://nominatim.openstreetmap.org/search}
+      ExternalContext__OsrmEndpoint: ${OSRM_ENDPOINT:-https://router.project-osrm.org}
+      ExternalContext__DuckDuckGoEndpoint: ${DUCKDUCKGO_ENDPOINT:-https://api.duckduckgo.com/}
+      ExternalContext__DuckDuckGoHtmlEndpoint: ${DUCKDUCKGO_HTML_ENDPOINT:-https://html.duckduckgo.com/html/}
+      ExternalContext__NbuExchangeEndpoint: ${NBU_EXCHANGE_ENDPOINT:-https://bank.gov.ua/NBUStatService/v1/statdirectory/exchange}
+      ExternalContext__MinfinFuelEndpoint: ${MINFIN_FUEL_ENDPOINT:-https://index.minfin.com.ua/ua/markets/fuel/reg/harkovskaya/}
+      Parser__Enabled: "true"
+      Parser__RunOnStartup: "false"
+    ports:
+      - "${PORT:-5000}:8080"
+
+volumes:
+  livefuelmap_mysql:
+  livefuelmap_ollama:
