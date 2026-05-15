@@ -31,6 +31,7 @@ export default function ChatWidget() {
     }
   });
   const messagesRef = useRef(null);
+  const panelRef = useRef(null);
   const resizing = useRef(null);
   const sessionId = useMemo(getSessionId, []);
 
@@ -47,6 +48,29 @@ export default function ChatWidget() {
   useEffect(() => {
     messagesRef.current?.scrollTo({ top: messagesRef.current.scrollHeight, behavior: "smooth" });
   }, [messages, loading]);
+
+  useEffect(() => {
+    if (!open) return undefined;
+
+    const panel = panelRef.current;
+    const messagesContainer = messagesRef.current;
+    if (!panel || !messagesContainer) return undefined;
+
+    const onWheel = event => {
+      const isPageDelta = event.deltaMode === 2;
+      const isLineDelta = event.deltaMode === 1;
+      const multiplier = isPageDelta ? messagesContainer.clientHeight : isLineDelta ? 16 : 1;
+      const delta = (Math.abs(event.deltaY) >= Math.abs(event.deltaX) ? event.deltaY : event.deltaX) * multiplier;
+      if (!delta) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+      messagesContainer.scrollTop += delta;
+    };
+
+    panel.addEventListener("wheel", onWheel, { passive: false });
+    return () => panel.removeEventListener("wheel", onWheel);
+  }, [open]);
 
   useEffect(() => {
     const move = event => {
@@ -110,6 +134,8 @@ export default function ChatWidget() {
       <AnimatePresence>
         {open && (
           <motion.section
+            ref={panelRef}
+            data-lenis-prevent-wheel
             initial={{ opacity: 0, y: 26, scale: 0.96, filter: "blur(12px)" }}
             animate={{ opacity: 1, y: 0, scale: 1, filter: "blur(0px)" }}
             exit={{ opacity: 0, y: 18, scale: 0.98, filter: "blur(8px)" }}
@@ -129,7 +155,7 @@ export default function ChatWidget() {
                 <button type="button" onClick={() => setOpen(false)} className="rounded-lg p-2 hover:bg-white/10"><X className="h-4 w-4" /></button>
               </div>
             </div>
-            <div ref={messagesRef} className="chat-body flex-1 space-y-3 overflow-y-auto p-4">
+            <div ref={messagesRef} data-lenis-prevent-wheel className="chat-body flex-1 space-y-3 overflow-y-auto overscroll-contain p-4">
               {messages.length === 0 && <div className="rounded-2xl bg-slate-50 p-4 text-sm text-slate-600 dark:bg-slate-900 dark:text-slate-200">Запитайте про найдешевше пальне, зміну цін, АЗС або функції сайту.</div>}
               {messages.map((message, index) => (
                 <motion.div

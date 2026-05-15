@@ -66,6 +66,37 @@ public sealed class ChatControllerTests(LiveFuelMapApiFactory factory) : IClassF
     }
 
     [Fact]
+    public async Task Chat_FollowUpStationChange_ReusesPreviousFuelType()
+    {
+        var sessionId = $"context-price-{Guid.NewGuid():N}";
+
+        var firstResponse = await _client.PostAsJsonAsync("/api/chat", new ChatRequest(
+            "Яка ціна на 95 бензин на ОККО?",
+            sessionId,
+            "Харків"));
+        firstResponse.EnsureSuccessStatusCode();
+        var firstJson = await JsonDocument.ParseAsync(await firstResponse.Content.ReadAsStreamAsync());
+
+        Assert.Equal("answered", firstJson.RootElement.GetProperty("status").GetString());
+        Assert.Contains("ОККО", firstJson.RootElement.GetProperty("answer").GetString());
+        Assert.Contains("78", firstJson.RootElement.GetProperty("answer").GetString());
+
+        var secondResponse = await _client.PostAsJsonAsync("/api/chat", new ChatRequest(
+            "А на Бренд Ойл яка ціна?",
+            sessionId,
+            "Харків",
+            null,
+            11));
+        secondResponse.EnsureSuccessStatusCode();
+        var secondJson = await JsonDocument.ParseAsync(await secondResponse.Content.ReadAsStreamAsync());
+        var secondAnswer = secondJson.RootElement.GetProperty("answer").GetString() ?? string.Empty;
+
+        Assert.Equal("answered", secondJson.RootElement.GetProperty("status").GetString());
+        Assert.True(secondAnswer.Contains("Brand Oil") || secondAnswer.Contains("Бренд Ойл"), secondAnswer);
+        Assert.Contains("76,50", secondAnswer);
+    }
+
+    [Fact]
     public async Task ChatHistory_ReturnsSavedSessionMessages()
     {
         var sessionId = $"history-{Guid.NewGuid():N}";

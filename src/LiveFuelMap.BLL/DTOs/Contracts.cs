@@ -139,4 +139,4 @@ public sealed record ChatResponseDto(string Answer, string SessionId, string Int
 public sealed record ChatHistoryDto(int Id, string SessionId, int? UserId, string Message, string Answer, string Intent, string Status, DateTime CreatedAt);
 
 public sealed record ChatTopicDecision(bool IsAllowed, string Intent, bool IsSecurityBlocked = false);
-public sealed record ChatContextResult(bool HasRequiredData, bool RequiresFuelData, string Intent, string Context, bool UsesExternalContext = false);
+public sealed record ChatContextResult(bool HasRequiredData, bool RequiresFuelData, string Intent, string Context, bool UsesExternalContext = false, string? DirectAnswer = null);

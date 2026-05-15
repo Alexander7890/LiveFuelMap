@@ -1,5 +1,5 @@
 import { Link, NavLink } from "react-router-dom";
-import { Activity, BarChart3, Bot, Database, ExternalLink, Fuel, LogOut, Menu, Shield, User, X } from "lucide-react";
+import { Activity, BarChart3, Database, ExternalLink, Fuel, LogOut, Menu, Shield, User, X } from "lucide-react";
 import { AnimatePresence, motion } from "framer-motion";
 import { useEffect, useState } from "react";
 import { useAuth } from "../../contexts/AuthContext";
@@ -171,7 +171,11 @@ export default function AppShell({ children }) {
               </a>
             </span>
           </div>
-          <span className="flex items-center gap-2 text-slate-700 dark:text-slate-200"><Bot className="h-4 w-4" /> AI-чат, WebSocket, експорт, адмін-панель</span>
+          <div className="max-w-md border-t border-slate-200 pt-3 text-slate-600 dark:border-slate-800 dark:text-slate-300 lg:justify-self-end lg:border-l lg:border-t-0 lg:pl-6 lg:pt-0">
+            <span className="block font-semibold text-slate-900 dark:text-white">LiveFuelMap підтримує</span>
+            <span className="block leading-6">AI-чат, систему real-time оновлення даних,</span>
+            <span className="block leading-6">експорт даних та функціональну адмін-панель</span>
+          </div>
         </div>
       </footer>
 

@@ -52,6 +52,47 @@ public sealed class LiveFuelMapApiFactory : WebApplicationFactory<Program>
                 });
                 db.SaveChanges();
             }
+
+            if (!db.Stations.Any(x => x.Id == 99))
+            {
+                db.Stations.Add(new Station
+                {
+                    Id = 99,
+                    Name = "Brand Oil",
+                    NormalizedKey = "brand-oil",
+                    Address = "Test address",
+                    City = "Харків",
+                    Latitude = 49.990000m,
+                    Longitude = 36.240000m,
+                    IsActive = true,
+                    CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)
+                });
+                db.SaveChanges();
+            }
+
+            if (!db.FuelPrices.Any(x => x.StationId == 11 && x.FuelId == 2 && x.Date == new DateTime(2026, 5, 1)))
+            {
+                db.FuelPrices.Add(new FuelPrice
+                {
+                    StationId = 11,
+                    FuelId = 2,
+                    Date = new DateTime(2026, 5, 1),
+                    Price = 78.00m
+                });
+            }
+
+            if (!db.FuelPrices.Any(x => x.StationId == 99 && x.FuelId == 2 && x.Date == new DateTime(2026, 5, 1)))
+            {
+                db.FuelPrices.Add(new FuelPrice
+                {
+                    StationId = 99,
+                    FuelId = 2,
+                    Date = new DateTime(2026, 5, 1),
+                    Price = 76.50m
+                });
+            }
+
+            db.SaveChanges();
         });
     }
 

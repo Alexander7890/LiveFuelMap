@@ -109,16 +109,22 @@ export function SplitText({ text, as: Component = "span", by = "word", className
   }
 
   return (
-    <Component ref={rootRef} className={cx("inline-flex flex-wrap", className)}>
+    <Component ref={rootRef} className={cx("inline-flex flex-wrap items-baseline gap-y-[0.06em]", className)}>
       {parts.map((part, index) => {
         const isSpace = /^\s+$/.test(part);
         return (
           <span
             key={`${part}-${index}`}
-            className={cx("overflow-hidden", isSpace ? "w-[0.28em]" : by === "char" ? "" : "mr-[0.18em]")}
+            className={cx(
+              "inline-block align-baseline",
+              isSpace
+                ? "w-[0.28em] shrink-0"
+                : "overflow-hidden px-[0.05em] pb-[0.16em] pt-[0.08em]",
+              !isSpace && by !== "char" && "mr-[0.18em]"
+            )}
           >
             {!isSpace && (
-              <span className={cx("split-text-unit inline-block will-change-transform", itemClassName)}>
+              <span className={cx("split-text-unit inline-block leading-[1.08] will-change-transform", itemClassName)}>
                 {part}
               </span>
             )}

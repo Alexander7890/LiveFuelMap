@@ -615,7 +615,8 @@ public sealed class ChatContextService(
             builder.AppendLine(".");
         }
 
-        return new ChatContextResult(true, true, topic.Intent, builder.ToString());
+        var directAnswer = BuildDirectFuelPriceAnswer(request, fuelCodes, latestRows);
+        return new ChatContextResult(true, true, topic.Intent, builder.ToString(), DirectAnswer: directAnswer);
     }
 
     private static bool RequiresFuelData(string normalizedMessage, string intent)
@@ -818,6 +819,23 @@ public sealed class ChatContextService(
         return value.Value.ToString("+0.##;-0.##;0", UkrainianCulture);
     }
 
+    private static string? BuildDirectFuelPriceAnswer(ChatRequest request, IReadOnlyList<string> fuelCodes, IReadOnlyList<FuelPriceContextRow> latestRows)
+    {
+        if (request.StationId is null || fuelCodes.Count != 1)
+            return null;
+
+        var row = latestRows.FirstOrDefault(x =>
+            x.Latest.StationId == request.StationId.Value &&
+            string.Equals(x.Latest.Fuel.Code, fuelCodes[0], StringComparison.OrdinalIgnoreCase));
+
+        if (row is null)
+            return null;
+
+        var price = FormatPrice(row.Latest.Price);
+        var date = row.Latest.Date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        return $"На {row.Latest.Station.Name} пальне {row.Latest.Fuel.Name} коштує {price} грн/л. Дата оновлення: {date}.";
+    }
+
     private sealed record FuelPriceContextRow(FuelPrice Latest, FuelPrice? Previous)
     {
         public decimal? ChangeAmount => Previous is null ? null : Latest.Price - Previous.Price;
@@ -825,6 +843,358 @@ public sealed class ChatContextService(
             ? null
             : Math.Round((Latest.Price - Previous.Price) / Previous.Price * 100, 2);
     }
+}
+
+internal sealed record ChatDialogContext(
+    int? UserId,
+    string SessionId,
+    string? LastFuelCode,
+    int? LastStationId,
+    string? LastStationBrand,
+    string? LastCity,
+    string? LastIntent,
+    IReadOnlyList<ChatMessage> Messages,
+    DateTime? UpdatedAt,
+    bool UsesPriorContext,
+    bool NeedsFuelClarification,
+    bool CurrentStationUnresolved)
+{
+    public ChatRequest ApplyTo(ChatRequest request) =>
+        request with
+        {
+            FuelCode = LastFuelCode ?? request.FuelCode,
+            StationId = LastStationId ?? request.StationId,
+            City = LastCity ?? request.City
+        };
+
+    public string ToPromptBlock()
+    {
+        var builder = new StringBuilder();
+        builder.AppendLine("Структурований контекст поточної сесії чату:");
+        builder.AppendLine($"- userId: {(UserId is null ? "anonymous" : UserId.Value.ToString(CultureInfo.InvariantCulture))}");
+        builder.AppendLine($"- sessionId: {SessionId}");
+        builder.AppendLine($"- lastFuelType: {LastFuelCode ?? "невідомо"}");
+        builder.AppendLine($"- lastStationBrand: {LastStationBrand ?? "невідомо"}");
+        builder.AppendLine($"- lastStationId: {(LastStationId is null ? "невідомо" : LastStationId.Value.ToString(CultureInfo.InvariantCulture))}");
+        builder.AppendLine($"- lastCity: {LastCity ?? "невідомо"}");
+        builder.AppendLine($"- lastIntent: {LastIntent ?? "невідомо"}");
+        if (UpdatedAt is not null)
+            builder.AppendLine($"- updatedAtUtc: {UpdatedAt.Value:O}");
+        return builder.ToString();
+    }
+}
+
+internal sealed record ChatParameterSnapshot(
+    string? FuelCode,
+    int? StationId,
+    string? StationBrand,
+    string? City,
+    string? Intent,
+    DateTime? CreatedAt,
+    bool MentionsFuel,
+    bool MentionsStation,
+    bool StationResolved)
+{
+    public static ChatParameterSnapshot Empty { get; } = new(null, null, null, null, null, null, false, false, false);
+
+    public bool HasAnyParameter => FuelCode is not null || StationId is not null || City is not null || MentionsFuel || MentionsStation;
+}
+
+internal static class ChatDialogContextResolver
+{
+    private static readonly string[] BrandOilAliases = ["brandoil", "brendoil", "brentoil", "brendoyl", "brentoyl"];
+
+    public static ChatDialogContext Build(
+        int? userId,
+        string sessionId,
+        ChatRequest request,
+        string currentMessage,
+        IReadOnlyList<ChatMessage> recentConversation,
+        IReadOnlyList<Station> activeStations,
+        bool isFollowUp,
+        bool isCurrentOffTopic)
+    {
+        var previous = ChatParameterSnapshot.Empty;
+        foreach (var row in recentConversation)
+        {
+            previous = Merge(previous, Extract(row.UserMessage, null, activeStations, row.Intent, row.CreatedAt));
+            previous = Merge(previous, Extract(row.BotResponse, null, activeStations, row.Intent, row.CreatedAt));
+        }
+
+        var current = Extract(currentMessage, request, activeStations, null, DateTime.UtcNow);
+        var canUsePriorContext = !isCurrentOffTopic &&
+                                 recentConversation.Count > 0 &&
+                                 (isFollowUp || current.MentionsStation || current.MentionsFuel || IsPriceContextCandidate(currentMessage));
+
+        var fuelCode = current.FuelCode;
+        if (fuelCode is null && canUsePriorContext && (isFollowUp || current.MentionsStation || IsPriceContextCandidate(currentMessage)))
+            fuelCode = previous.FuelCode;
+
+        var stationId = current.StationId;
+        var stationBrand = current.StationBrand;
+        if (stationId is null && canUsePriorContext && isFollowUp)
+        {
+            stationId = previous.StationId;
+            stationBrand ??= previous.StationBrand;
+        }
+
+        var city = current.City ?? (canUsePriorContext ? previous.City : null);
+        var intent = current.Intent ?? (canUsePriorContext ? previous.Intent : null);
+        var needsFuelClarification = !isCurrentOffTopic &&
+                                     fuelCode is null &&
+                                     current.MentionsStation &&
+                                     (isFollowUp || IsPriceContextCandidate(currentMessage));
+
+        return new ChatDialogContext(
+            userId,
+            sessionId,
+            fuelCode,
+            stationId,
+            stationBrand,
+            city,
+            intent,
+            recentConversation,
+            current.CreatedAt ?? previous.CreatedAt,
+            canUsePriorContext,
+            needsFuelClarification,
+            current.MentionsStation && !current.StationResolved);
+    }
+
+    public static ChatParameterSnapshot Extract(
+        string message,
+        ChatRequest? request,
+        IReadOnlyList<Station> activeStations,
+        string? intent = null,
+        DateTime? createdAt = null)
+    {
+        var fuelCode = DetectFuelCode(message) ?? NormalizeFuelCode(request?.FuelCode);
+        var city = DetectCity(message) ?? NormalizeOptional(request?.City);
+        var station = DetectStation(activeStations, message);
+        var stationId = station.StationId ?? request?.StationId;
+        var stationBrand = station.Brand;
+
+        if (stationId is not null && string.IsNullOrWhiteSpace(stationBrand))
+            stationBrand = activeStations.FirstOrDefault(x => x.Id == stationId.Value)?.Name;
+
+        return new ChatParameterSnapshot(
+            fuelCode,
+            stationId,
+            stationBrand,
+            city,
+            intent,
+            createdAt,
+            fuelCode is not null,
+            station.MentionsStation || request?.StationId is not null,
+            stationId is not null);
+    }
+
+    private static ChatParameterSnapshot Merge(ChatParameterSnapshot previous, ChatParameterSnapshot next) =>
+        new(
+            next.FuelCode ?? previous.FuelCode,
+            next.StationId ?? previous.StationId,
+            next.StationBrand ?? previous.StationBrand,
+            next.City ?? previous.City,
+            next.Intent ?? previous.Intent,
+            next.CreatedAt ?? previous.CreatedAt,
+            previous.MentionsFuel || next.MentionsFuel,
+            previous.MentionsStation || next.MentionsStation,
+            previous.StationResolved || next.StationResolved);
+
+    private static string? DetectFuelCode(string message)
+    {
+        var text = NormalizeForMatching(message, keepPlus: true);
+
+        if (ContainsAny(text, ["a95+", "ai95+", "95+", "a95plus", "ai95plus", "premium95", "prem95"]))
+            return "a95plus";
+        if (ContainsAny(text, ["diesel", "dyzel", "dp", "dt"]))
+            return "diesel";
+        if (ContainsAny(text, ["lpg", "gaz", "gas"]))
+            return "gas";
+        if (Regex.IsMatch(text, @"(?<!\d)95(?!\d|\+)") || ContainsAny(text, ["a95", "ai95", "benzin95", "benzyn95"]))
+            return "a95";
+        if (Regex.IsMatch(text, @"(?<!\d)92(?!\d)") || ContainsAny(text, ["a92", "ai92", "benzin92", "benzyn92"]))
+            return "a92";
+
+        return null;
+    }
+
+    private static string? NormalizeFuelCode(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return null;
+
+        var code = value.Trim().ToLowerInvariant();
+        return code is "a95plus" or "a95" or "a92" or "diesel" or "gas" ? code : null;
+    }
+
+    private static string? DetectCity(string message)
+    {
+        var text = NormalizeForMatching(message);
+        if (ContainsAny(text, ["kharkiv", "harkiv", "kharkov", "harkov"]))
+            return "Харків";
+
+        return null;
+    }
+
+    private static string? NormalizeOptional(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? null : ChatRequestSafetyGuard.NormalizeMessage(value);
+
+    private static StationMatch DetectStation(IReadOnlyList<Station> stations, string message)
+    {
+        var text = NormalizeForMatching(message);
+        Station? bestStation = null;
+        string? bestAlias = null;
+
+        foreach (var station in stations)
+        {
+            foreach (var alias in GetStationAliases(station))
+            {
+                if (alias.Length < 3 || !text.Contains(alias, StringComparison.Ordinal))
+                    continue;
+
+                if (bestAlias is null || alias.Length > bestAlias.Length)
+                {
+                    bestAlias = alias;
+                    bestStation = station;
+                }
+            }
+        }
+
+        if (bestStation is not null)
+            return new StationMatch(bestStation.Id, bestStation.Name, true);
+
+        if (BrandOilAliases.Any(alias => text.Contains(alias, StringComparison.Ordinal)))
+            return new StationMatch(null, "Brand Oil", true);
+
+        return new StationMatch(null, null, false);
+    }
+
+    private static IEnumerable<string> GetStationAliases(Station station)
+    {
+        var aliases = new HashSet<string>(StringComparer.Ordinal)
+        {
+            NormalizeForMatching(station.Name),
+            NormalizeForMatching(station.NormalizedKey)
+        };
+
+        if (aliases.Contains("okko"))
+        {
+            aliases.Add("oko");
+        }
+
+        if (aliases.Overlaps(BrandOilAliases))
+        {
+            foreach (var alias in BrandOilAliases)
+                aliases.Add(alias);
+        }
+
+        if (aliases.Contains("brsmnafta"))
+        {
+            aliases.Add("brsm");
+            aliases.Add("brsmnafta");
+        }
+
+        if (aliases.Contains("ugo"))
+        {
+            aliases.Add("ugo");
+        }
+
+        if (aliases.Contains("ukrnafta"))
+        {
+            aliases.Add("ukrnafta");
+            aliases.Add("ukrnaphta");
+        }
+
+        return aliases.Where(x => x.Length >= 3);
+    }
+
+    private static bool IsPriceContextCandidate(string message)
+    {
+        var text = NormalizeForMatching(message);
+        return ContainsAny(text,
+        [
+            "cina", "ciny", "price", "cost", "koshtu", "vartist", "benz", "fuel", "palyv", "palne",
+            "azs", "zaprav", "operator", "deshev", "naidesh", "dorozh", "a95", "ai95", "a92", "ai92",
+            "diesel", "dyzel", "lpg", "gaz", "gas"
+        ]);
+    }
+
+    private static bool ContainsAny(string text, IEnumerable<string> terms) =>
+        terms.Any(term => text.Contains(term, StringComparison.Ordinal));
+
+    private static string NormalizeForMatching(string value, bool keepPlus = false)
+    {
+        var builder = new StringBuilder(value.Length);
+        foreach (var ch in value.Trim().ToLowerInvariant())
+        {
+            if (TryTransliterate(ch, out var replacement))
+            {
+                builder.Append(replacement);
+                continue;
+            }
+
+            if (char.IsLetterOrDigit(ch))
+            {
+                builder.Append(ch);
+                continue;
+            }
+
+            if (keepPlus && ch == '+')
+                builder.Append('+');
+        }
+
+        return builder.ToString();
+    }
+
+    private static bool TryTransliterate(char ch, out string replacement)
+    {
+        replacement = ch switch
+        {
+            'а' => "a",
+            'б' => "b",
+            'в' => "v",
+            'г' => "h",
+            'ґ' => "g",
+            'д' => "d",
+            'е' => "e",
+            'є' => "ie",
+            'ё' => "e",
+            'ж' => "zh",
+            'з' => "z",
+            'и' => "y",
+            'і' => "i",
+            'ї' => "i",
+            'й' => "i",
+            'к' => "k",
+            'л' => "l",
+            'м' => "m",
+            'н' => "n",
+            'о' => "o",
+            'п' => "p",
+            'р' => "r",
+            'с' => "s",
+            'т' => "t",
+            'у' => "u",
+            'ф' => "f",
+            'х' => "kh",
+            'ц' => "ts",
+            'ч' => "ch",
+            'ш' => "sh",
+            'щ' => "shch",
+            'ь' => "",
+            'ы' => "y",
+            'ъ' => "",
+            'э' => "e",
+            'ю' => "iu",
+            'я' => "ia",
+            _ => string.Empty
+        };
+
+        return replacement.Length > 0 || ch is 'ь' or 'ъ';
+    }
+
+    private sealed record StationMatch(int? StationId, string? Brand, bool MentionsStation);
+
 }
 
 public sealed class ChatService(
@@ -892,15 +1262,35 @@ public sealed class ChatService(
         }
 
         var recentConversation = await LoadRecentConversationAsync(sessionId, userId, cancellationToken);
+        var isFollowUp = IsLikelyConversationFollowUp(message);
+        var isCurrentOffTopic = LooksLikeCurrentOffTopic(message);
+        var activeStations = await LoadActiveStationsAsync(cancellationToken);
+        var dialogContext = ChatDialogContextResolver.Build(
+            userId,
+            sessionId,
+            request,
+            message,
+            recentConversation,
+            activeStations,
+            isFollowUp,
+            isCurrentOffTopic);
+
+        request = dialogContext.ApplyTo(request);
         var useConversationContext = recentConversation.Count > 0 &&
-                                     IsLikelyConversationFollowUp(message) &&
-                                     !LooksLikeCurrentOffTopic(message);
+                                     dialogContext.UsesPriorContext &&
+                                     !isCurrentOffTopic;
         var contextMessage = useConversationContext
-            ? BuildHistoryAwareMessage(message, recentConversation)
+            ? BuildHistoryAwareMessage(message, recentConversation, dialogContext)
             : message;
         var aiUserMessage = useConversationContext
-            ? BuildAiUserMessage(message, recentConversation)
+            ? BuildAiUserMessage(message, recentConversation, dialogContext)
             : message;
+
+        if (dialogContext.NeedsFuelClarification)
+            return await SaveAndReturnAsync(request, sessionId, userId, message, LocalizeMissingFuel(responseLanguage), "clarify-fuel", "clarification", cancellationToken);
+
+        if (dialogContext.CurrentStationUnresolved && dialogContext.LastStationBrand is not null)
+            return await SaveAndReturnAsync(request, sessionId, userId, message, LocalizeUnknownStation(responseLanguage, dialogContext.LastStationBrand), "station-not-found", "no-data", cancellationToken);
 
         var fuelPreflight = ChatFuelQuestionValidator.Validate(message, responseLanguage, request.FuelCode);
         if (fuelPreflight is not null)
@@ -916,6 +1306,9 @@ public sealed class ChatService(
         var context = await contextService.BuildContextAsync(request with { Message = contextMessage, SessionId = sessionId }, topic, cancellationToken);
         if (context.RequiresFuelData && !context.HasRequiredData && !context.UsesExternalContext)
             return await SaveAndReturnAsync(request, sessionId, userId, message, LocalizeNoData(responseLanguage), context.Intent, "no-data", cancellationToken);
+
+        if (!string.IsNullOrWhiteSpace(context.DirectAnswer))
+            return await SaveAndReturnAsync(request, sessionId, userId, message, context.DirectAnswer, context.Intent, "answered", cancellationToken);
 
         try
         {
@@ -950,11 +1343,18 @@ public sealed class ChatService(
         return await query
             .OrderByDescending(x => x.CreatedAt)
             .ThenByDescending(x => x.Id)
-            .Take(6)
+            .Take(10)
             .OrderBy(x => x.CreatedAt)
             .ThenBy(x => x.Id)
             .ToListAsync(cancellationToken);
     }
+
+    private async Task<IReadOnlyList<Station>> LoadActiveStationsAsync(CancellationToken cancellationToken) =>
+        await unitOfWork.Stations.Query()
+            .AsNoTracking()
+            .Where(x => x.IsActive)
+            .OrderBy(x => x.Name)
+            .ToListAsync(cancellationToken);
 
     private static bool IsLikelyConversationFollowUp(string message)
     {
@@ -991,9 +1391,11 @@ public sealed class ChatService(
         return !ContainsAny(text, ["азс", "паль", "бенз", "диз", "газ", "fuel", "petrol", "gasoline", "diesel", "price"]);
     }
 
-    private static string BuildHistoryAwareMessage(string message, IReadOnlyList<ChatMessage> recentConversation)
+    private static string BuildHistoryAwareMessage(string message, IReadOnlyList<ChatMessage> recentConversation, ChatDialogContext dialogContext)
     {
         var builder = new StringBuilder();
+        builder.Append(dialogContext.ToPromptBlock());
+        builder.AppendLine();
         builder.AppendLine("Попередній контекст розмови:");
         AppendConversation(builder, recentConversation);
         builder.AppendLine();
@@ -1002,10 +1404,12 @@ public sealed class ChatService(
         return builder.ToString();
     }
 
-    private static string BuildAiUserMessage(string message, IReadOnlyList<ChatMessage> recentConversation)
+    private static string BuildAiUserMessage(string message, IReadOnlyList<ChatMessage> recentConversation, ChatDialogContext dialogContext)
     {
         var builder = new StringBuilder();
         builder.AppendLine("Врахуй попередні повідомлення цієї розмови як контекст для уточнення.");
+        builder.Append(dialogContext.ToPromptBlock());
+        builder.AppendLine();
         AppendConversation(builder, recentConversation);
         builder.AppendLine();
         builder.AppendLine("Поточне повідомлення користувача:");
@@ -1237,6 +1641,24 @@ public sealed class ChatService(
             ChatResponseLanguage.French => "Malheureusement, la base de données ne contient pas d'information actuelle pour votre demande.",
             ChatResponseLanguage.Spanish => "Lamentablemente, la base de datos no tiene información actual para tu solicitud.",
             _ => NoDataMessage
+        };
+
+    private static string LocalizeMissingFuel(ChatResponseLanguage language) =>
+        language switch
+        {
+            ChatResponseLanguage.English => "Please specify the fuel type: AI-92, AI-95, AI-95+, diesel or LPG.",
+            ChatResponseLanguage.Polish => "Podaj rodzaj paliwa: AI-92, AI-95, AI-95+, diesel albo LPG.",
+            ChatResponseLanguage.German => "Bitte gib die Kraftstoffart an: AI-92, AI-95, AI-95+, Diesel oder LPG.",
+            ChatResponseLanguage.French => "Précisez le carburant : AI-92, AI-95, AI-95+, diesel ou GPL.",
+            ChatResponseLanguage.Spanish => "Especifica el combustible: AI-92, AI-95, AI-95+, diésel o GLP.",
+            _ => "Уточніть тип пального: АІ-92, АІ-95, АІ-95+, ДП або Газ."
+        };
+
+    private static string LocalizeUnknownStation(ChatResponseLanguage language, string stationBrand) =>
+        language switch
+        {
+            ChatResponseLanguage.English => $"I could not find the gas station \"{stationBrand}\" in the LiveFuelMap database. Please clarify the station name or choose it from the site list.",
+            _ => $"Не знайшов АЗС \"{stationBrand}\" у базі LiveFuelMap. Уточніть назву АЗС або виберіть її зі списку на сайті."
         };
 
     private static string LocalizeFuelClarificationRejected(ChatResponseLanguage language) =>
