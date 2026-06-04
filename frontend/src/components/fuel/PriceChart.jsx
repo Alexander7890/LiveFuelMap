@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Line } from "react-chartjs-2";
+import { useTranslation } from "react-i18next";
 import {
   CategoryScale,
   Chart as ChartJS,
@@ -16,6 +17,7 @@ import { useData } from "../../contexts/DataContext";
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Tooltip, Legend);
 
 export default function PriceChart({ activeFuel }) {
+  const { t } = useTranslation();
   const { fuels, stations } = useData();
   const [fuel, setFuel] = useState(activeFuel || "all");
   const [stationId, setStationId] = useState("");
@@ -48,21 +50,21 @@ export default function PriceChart({ activeFuel }) {
     <Card>
       <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
         <div>
-          <h3 className="text-lg font-black">Графік зміни цін</h3>
-          <p className="text-sm text-slate-500">Лінії не перериваються на днях без оновлення ціни.</p>
+          <h3 className="text-lg font-black">{t("chart.title")}</h3>
+          <p className="text-sm text-slate-500">{t("chart.subtitle")}</p>
         </div>
-        <div className="grid gap-2 sm:grid-cols-2">
+        <div className="grid w-full gap-2 sm:grid-cols-2 md:w-auto">
           <Select value={fuel} onChange={event => setFuel(event.target.value)}>
-            <option value="all">Усі види</option>
+            <option value="all">{t("chart.allFuel")}</option>
             {fuels.map(item => <option key={item.code} value={item.code}>{item.name}</option>)}
           </Select>
           <Select value={stationId} onChange={event => setStationId(event.target.value)}>
-            <option value="">Усі АЗС</option>
+            <option value="">{t("chart.allStations")}</option>
             {stations.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
           </Select>
         </div>
       </div>
-      <div className="mt-5 h-[360px]">
+      <div className="mt-5 h-[300px] sm:h-[360px]">
         <Line
           data={chartData}
           options={{
@@ -72,7 +74,7 @@ export default function PriceChart({ activeFuel }) {
             interaction: { mode: "index", intersect: false },
             scales: {
               x: { grid: { color: "rgba(148,163,184,.16)" } },
-              y: { beginAtZero: false, grid: { color: "rgba(148,163,184,.16)" }, ticks: { callback: value => `${value} грн` } }
+              y: { beginAtZero: false, grid: { color: "rgba(148,163,184,.16)" }, ticks: { callback: value => `${value} ${t("common.currencyShort")}` } }
             },
             plugins: {
               legend: { position: "bottom" }

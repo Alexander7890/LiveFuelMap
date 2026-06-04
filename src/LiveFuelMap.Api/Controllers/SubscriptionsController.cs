@@ -26,8 +26,34 @@ public sealed class SubscriptionsController(ISubscriptionService subscriptionSer
         try
         {
             var userId = int.Parse(User.FindFirstValue(JwtRegisteredClaimNames.Sub)!);
-            await subscriptionService.CreateAsync(userId, request, cancellationToken);
-            return Created(string.Empty, new { message = "Subscription created." });
+            var subscriptions = await subscriptionService.CreateAsync(userId, request, cancellationToken);
+            return Created(string.Empty, new
+            {
+                message = "Підписку збережено. Ви отримуватимете оновлення згідно з обраним графіком.",
+                subscriptions
+            });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { error = ex.Message });
+        }
+    }
+
+    [Authorize]
+    [HttpPut("{id:int}")]
+    public async Task<IActionResult> Update(int id, SubscriptionRequest request, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var userId = int.Parse(User.FindFirstValue(JwtRegisteredClaimNames.Sub)!);
+            var subscription = await subscriptionService.UpdateAsync(userId, id, request, cancellationToken);
+            return subscription is null
+                ? NotFound()
+                : Ok(new
+                {
+                    message = "Підписку збережено. Ви отримуватимете оновлення згідно з обраним графіком.",
+                    subscription
+                });
         }
         catch (InvalidOperationException ex)
         {

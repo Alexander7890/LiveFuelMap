@@ -17,6 +17,8 @@ public static class DependencyInjection
         services.Configure<JwtOptions>(configuration.GetSection("Jwt"));
         services.Configure<ParserOptions>(configuration.GetSection("Parser"));
         services.Configure<FrontendOptions>(configuration.GetSection("Frontend"));
+        services.Configure<GoogleAuthOptions>(configuration.GetSection("GoogleAuth"));
+        services.Configure<CaptchaOptions>(configuration.GetSection("Captcha"));
         services.Configure<AiOptions>(configuration.GetSection("Ai"));
         services.Configure<ChatOptions>(configuration.GetSection("Chat"));
         services.Configure<ExternalContextOptions>(configuration.GetSection("ExternalContext"));
@@ -27,8 +29,10 @@ public static class DependencyInjection
         services.AddSingleton<ITokenHasher>(sp => sp.GetRequiredService<Sha1HashService>());
         services.AddSingleton<ITokenService, JwtTokenService>();
         services.AddSingleton<IChatRateLimiter, InMemoryChatRateLimiter>();
-        services.AddHttpClient<LocalAiChatClient>();
-        services.AddScoped<IAiChatClient>(sp => sp.GetRequiredService<LocalAiChatClient>());
+        services.AddHttpClient<IGoogleOAuthClient, GoogleOAuthClient>();
+        services.AddHttpClient<ICaptchaVerificationService, CaptchaVerificationService>();
+        services.AddHttpClient<GroqAiChatClient>();
+        services.AddScoped<IAiChatClient>(sp => sp.GetRequiredService<GroqAiChatClient>());
         services.AddHttpClient<ExternalAutomotiveContextService>();
         services.AddScoped<IExternalAutomotiveContextService>(sp => sp.GetRequiredService<ExternalAutomotiveContextService>());
 
@@ -36,6 +40,10 @@ public static class DependencyInjection
             services.AddSingleton<IEmailSender, SmtpEmailSender>();
         else
             services.AddSingleton<IEmailSender, NoopEmailSender>();
+
+        services.AddSingleton<ISubscriptionNotificationQueue, SubscriptionNotificationQueue>();
+        services.AddHostedService<SubscriptionNotificationWorker>();
+        services.AddHostedService<SubscriptionDigestWorker>();
 
         services.AddHttpClient<MinfinHtmlPriceSourceClient>();
         services.AddHttpClient<JsonPriceSourceClient>();

@@ -13,14 +13,21 @@ namespace LiveFuelMap.Api.Controllers;
 public sealed class ApiTokensController(IApiTokenService apiTokenService) : ControllerBase
 {
     [HttpGet]
-    public async Task<IActionResult> List(CancellationToken cancellationToken) =>
-        Ok(await apiTokenService.ListAsync(cancellationToken));
+    public async Task<IActionResult> List([FromQuery] ApiTokenQuery query, CancellationToken cancellationToken) =>
+        Ok(await apiTokenService.ListAsync(query, cancellationToken));
 
     [HttpPost]
     public async Task<IActionResult> Create(ApiTokenCreateRequest request, CancellationToken cancellationToken)
     {
         var adminUserId = int.Parse(User.FindFirstValue(JwtRegisteredClaimNames.Sub)!);
-        return Ok(await apiTokenService.CreateAsync(adminUserId, request, cancellationToken));
+        try
+        {
+            return Ok(await apiTokenService.CreateAsync(adminUserId, request, cancellationToken));
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { error = ex.Message });
+        }
     }
 
     [HttpDelete("{id:int}")]

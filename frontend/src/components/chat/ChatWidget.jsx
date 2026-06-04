@@ -1,24 +1,68 @@
 import { Bot, Maximize2, Minimize2, Send, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
+import { useTranslation } from "react-i18next";
 import { api } from "../../services/api";
 import { useToast } from "../../contexts/ToastContext";
+import { useAuth } from "../../contexts/AuthContext";
+import { useLanguage } from "../../contexts/LanguageContext";
 import { premiumEase } from "../../motion/presets";
 
-const sessionKey = "chatSessionId";
+const guestSessionKey = "chatSessionId";
+const scopedSessionKeyPrefix = "chatSessionId:";
 const sizeKey = "chatPanelCustomSize";
 
-function getSessionId() {
-  let value = localStorage.getItem(sessionKey);
+function createSessionId() {
+  return globalThis.crypto?.randomUUID
+    ? globalThis.crypto.randomUUID().replaceAll("-", "")
+    : `${Date.now()}${Math.random().toString(16).slice(2)}`;
+}
+
+function getGuestSessionId() {
+  let value = localStorage.getItem(guestSessionKey);
   if (!value) {
-    value = crypto?.randomUUID ? crypto.randomUUID().replaceAll("-", "") : `${Date.now()}${Math.random().toString(16).slice(2)}`;
-    localStorage.setItem(sessionKey, value);
+    value = createSessionId();
+    localStorage.setItem(guestSessionKey, value);
   }
   return value;
 }
 
+function getScopedSessionId(scopeKey) {
+  if (scopeKey === "guest") return getGuestSessionId();
+
+  const key = `${scopedSessionKeyPrefix}${scopeKey}`;
+  let value = localStorage.getItem(key);
+  if (!value) {
+    value = createSessionId();
+    localStorage.setItem(key, value);
+  }
+  return value;
+}
+
+function shouldRequestLocation(message) {
+  return /поруч|поблиз|найближ|близьк|геолокац|near|nearby|nearest/i.test(message);
+}
+
+function getLocationPayload(message) {
+  if (!shouldRequestLocation(message) || !navigator.geolocation) return Promise.resolve({});
+
+  return new Promise(resolve => {
+    navigator.geolocation.getCurrentPosition(
+      position => resolve({
+        latitude: position.coords.latitude,
+        longitude: position.coords.longitude
+      }),
+      () => resolve({}),
+      { enableHighAccuracy: false, maximumAge: 5 * 60 * 1000, timeout: 5000 }
+    );
+  });
+}
+
 export default function ChatWidget() {
+  const { t } = useTranslation();
   const { showToast } = useToast();
+  const { currentUser } = useAuth();
+  const { language } = useLanguage();
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [messages, setMessages] = useState([]);
@@ -33,17 +77,35 @@ export default function ChatWidget() {
   const messagesRef = useRef(null);
   const panelRef = useRef(null);
   const resizing = useRef(null);
-  const sessionId = useMemo(getSessionId, []);
+  const chatScopeKey = currentUser?.userId ? `user:${currentUser.userId}` : "guest";
+  const sessionId = useMemo(() => getScopedSessionId(chatScopeKey), [chatScopeKey]);
+  const chatScopeRef = useRef(chatScopeKey);
+
+  useEffect(() => {
+    chatScopeRef.current = chatScopeKey;
+    setMessages([]);
+    setText("");
+    setLoading(false);
+  }, [chatScopeKey]);
 
   useEffect(() => {
     if (!open) return;
+    let active = true;
+
     api.chat.history(sessionId)
-      .then(items => setMessages((items || []).flatMap(item => [
-        { role: "user", text: item.message },
-        { role: "bot", text: item.answer }
-      ])))
+      .then(items => {
+        if (!active) return;
+        setMessages((items || []).flatMap(item => [
+          { role: "user", text: item.message },
+          { role: "bot", text: item.answer }
+        ]));
+      })
       .catch(() => {});
-  }, [open, sessionId]);
+
+    return () => {
+      active = false;
+    };
+  }, [open, sessionId, chatScopeKey]);
 
   useEffect(() => {
     messagesRef.current?.scrollTo({ top: messagesRef.current.scrollHeight, behavior: "smooth" });
@@ -95,16 +157,24 @@ export default function ChatWidget() {
     event.preventDefault();
     const message = text.trim();
     if (!message) return;
+    const activeScope = chatScopeRef.current;
     setText("");
     setMessages(current => [...current, { role: "user", text: message }]);
     setLoading(true);
     try {
-      const response = await api.chat.send({ message, sessionId, city: "Харків" });
-      setMessages(current => [...current, { role: "bot", text: response.answer }]);
-    } catch {
-      setMessages(current => [...current, { role: "bot", text: "Тимчасово не вдалося отримати відповідь. Спробуйте пізніше." }]);
+      const locationPayload = await getLocationPayload(message);
+      const response = await api.chat.send({ message, sessionId, city: "Харків", language, ...locationPayload });
+      if (chatScopeRef.current === activeScope) {
+        setMessages(current => [...current, { role: "bot", text: response.answer }]);
+      }
+    } catch (error) {
+      if (chatScopeRef.current === activeScope) {
+        setMessages(current => [...current, { role: "bot", text: error?.payload?.answer || t("chat.error") }]);
+      }
     } finally {
-      setLoading(false);
+      if (chatScopeRef.current === activeScope) {
+        setLoading(false);
+      }
     }
   }
 
@@ -115,7 +185,7 @@ export default function ChatWidget() {
       // Local clear is still useful.
     }
     setMessages([]);
-    showToast("Чат очищено", "Історію повідомлень прибрано.");
+    showToast(t("chat.clearedTitle"), t("chat.clearedMessage"));
   }
 
   return (
@@ -126,7 +196,7 @@ export default function ChatWidget() {
         whileHover={{ y: -3, scale: 1.05 }}
         whileTap={{ scale: 0.95 }}
         className="fixed bottom-5 right-5 z-[55] grid h-14 w-14 place-items-center rounded-2xl bg-brand-600 text-white shadow-glow transition"
-        aria-label={open ? "Закрити AI-чат" : "Відкрити AI-чат"}
+        aria-label={open ? t("common.close") : t("chat.open")}
       >
         {open ? <X className="h-6 w-6" /> : <Bot className="h-6 w-6" />}
       </motion.button>
@@ -140,15 +210,18 @@ export default function ChatWidget() {
             animate={{ opacity: 1, y: 0, scale: 1, filter: "blur(0px)" }}
             exit={{ opacity: 0, y: 18, scale: 0.98, filter: "blur(8px)" }}
             transition={{ duration: 0.42, ease: premiumEase }}
-            className="chat-panel fixed bottom-24 right-5 z-[54] flex max-h-[calc(100vh-7rem)] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-3xl border border-slate-200 bg-white/95 shadow-soft backdrop-blur-xl dark:border-slate-800 dark:bg-slate-950/95"
-            style={{ width: size.width, height: size.height }}
+            className="chat-panel fixed bottom-20 left-3 right-3 z-[54] flex max-h-[calc(100svh-6rem)] flex-col overflow-hidden rounded-3xl border border-slate-200 bg-white/95 shadow-soft backdrop-blur-xl dark:border-slate-800 dark:bg-slate-950/95 sm:bottom-24 sm:left-auto sm:right-5"
+            style={{
+              width: `min(${size.width}px, calc(100vw - 1.5rem))`,
+              height: `min(${size.height}px, calc(100svh - 6rem))`
+            }}
           >
             <div className="glass-gradient flex items-center justify-between gap-3 border-b border-white/20 px-4 py-3 text-white">
-              <div>
-                <div className="font-bold">AI-помічник LiveFuelMap</div>
-                <div className="text-xs opacity-80">АЗС, пальне, авто та функціонал сайту</div>
+              <div className="min-w-0">
+                <div className="font-bold">{t("chat.title")}</div>
+                <div className="truncate text-xs opacity-80">{t("chat.subtitle")}</div>
               </div>
-              <div className="flex gap-1">
+              <div className="flex shrink-0 gap-1">
                 <button type="button" onClick={() => setSize({ width: 410, height: 560 })} className="rounded-lg p-2 hover:bg-white/10"><Minimize2 className="h-4 w-4" /></button>
                 <button type="button" onClick={() => setSize({ width: 680, height: 720 })} className="rounded-lg p-2 hover:bg-white/10"><Maximize2 className="h-4 w-4" /></button>
                 <button type="button" onClick={clear} className="rounded-lg p-2 hover:bg-white/10"><Trash2 className="h-4 w-4" /></button>
@@ -156,7 +229,7 @@ export default function ChatWidget() {
               </div>
             </div>
             <div ref={messagesRef} data-lenis-prevent-wheel className="chat-body flex-1 space-y-3 overflow-y-auto overscroll-contain p-4">
-              {messages.length === 0 && <div className="rounded-2xl bg-slate-50 p-4 text-sm text-slate-600 dark:bg-slate-900 dark:text-slate-200">Запитайте про найдешевше пальне, зміну цін, АЗС або функції сайту.</div>}
+              {messages.length === 0 && <div className="rounded-2xl bg-slate-50 p-4 text-sm text-slate-600 dark:bg-slate-900 dark:text-slate-200">{t("chat.empty")}</div>}
               {messages.map((message, index) => (
                 <motion.div
                   key={index}
@@ -169,9 +242,9 @@ export default function ChatWidget() {
                   </div>
                 </motion.div>
               ))}
-              {loading && <div className="w-fit rounded-2xl bg-slate-100 px-4 py-2 text-sm dark:bg-slate-900">Друкую відповідь...</div>}
+              {loading && <div className="w-fit rounded-2xl bg-slate-100 px-4 py-2 text-sm dark:bg-slate-900">{t("chat.thinking")}</div>}
             </div>
-            <form onSubmit={submit} className="chat-input-bar flex gap-2 border-t border-slate-200 p-3 dark:border-slate-800">
+            <form onSubmit={submit} className="chat-input-bar flex gap-2 border-t border-slate-200 p-2 dark:border-slate-800 sm:p-3">
               <textarea
                 className="field max-h-28 min-h-[44px] flex-1 resize-none"
                 value={text}
@@ -183,7 +256,7 @@ export default function ChatWidget() {
                   }
                 }}
                 maxLength={1000}
-                placeholder="Напишіть запит..."
+                placeholder={t("chat.placeholder")}
               />
               <button className="btn-primary h-11 px-3" type="submit" disabled={loading}><Send className="h-4 w-4" /></button>
             </form>

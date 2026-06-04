@@ -450,14 +450,6 @@ namespace LiveFuelMap.DAL.Persistence.Migrations
                         .HasMaxLength(500)
                         .HasColumnType("varchar(500)");
 
-                    b.Property<string>("PhotoUrls")
-                        .HasMaxLength(2000)
-                        .HasColumnType("varchar(2000)");
-
-                    b.Property<string>("WebsiteUrl")
-                        .HasMaxLength(500)
-                        .HasColumnType("varchar(500)");
-
                     b.Property<bool>("IsActive")
                         .HasColumnType("tinyint(1)");
 
@@ -479,8 +471,16 @@ namespace LiveFuelMap.DAL.Persistence.Migrations
                         .HasMaxLength(255)
                         .HasColumnType("varchar(255)");
 
+                    b.Property<string>("PhotoUrls")
+                        .HasMaxLength(2000)
+                        .HasColumnType("varchar(2000)");
+
                     b.Property<DateTime?>("UpdatedAt")
                         .HasColumnType("datetime(6)");
+
+                    b.Property<string>("WebsiteUrl")
+                        .HasMaxLength(500)
+                        .HasColumnType("varchar(500)");
 
                     b.HasKey("Id");
 
@@ -678,6 +678,11 @@ namespace LiveFuelMap.DAL.Persistence.Migrations
                         .HasColumnType("datetime(6)")
                         .HasDefaultValueSql("CURRENT_TIMESTAMP(6)");
 
+                    b.Property<string>("Email")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("varchar(255)");
+
                     b.Property<string>("Frequency")
                         .IsRequired()
                         .HasMaxLength(16)
@@ -686,6 +691,20 @@ namespace LiveFuelMap.DAL.Persistence.Migrations
                     b.Property<int>("FuelId")
                         .HasColumnType("int");
 
+                    b.Property<bool>("IsActive")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("tinyint(1)")
+                        .HasDefaultValue(true);
+
+                    b.Property<DateTime?>("LastSentAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<TimeSpan>("SendTime")
+                        .HasColumnType("time");
+
+                    b.Property<DateTime?>("UpdatedAt")
+                        .HasColumnType("datetime(6)");
+
                     b.Property<int>("UserId")
                         .HasColumnType("int");
 
@@ -693,7 +712,9 @@ namespace LiveFuelMap.DAL.Persistence.Migrations
 
                     b.HasIndex("FuelId");
 
-                    b.HasIndex("UserId", "FuelId", "City", "Frequency")
+                    b.HasIndex("Frequency", "IsActive", "SendTime");
+
+                    b.HasIndex("UserId", "FuelId", "City")
                         .IsUnique();
 
                     b.ToTable("subscriptions", (string)null);
@@ -707,10 +728,27 @@ namespace LiveFuelMap.DAL.Persistence.Migrations
 
                     MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<int>("Id"));
 
+                    b.Property<DateTime?>("AccountDeletionTokenExpiresAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<string>("AccountDeletionTokenHash")
+                        .HasMaxLength(255)
+                        .HasColumnType("varchar(255)");
+
+                    b.Property<string>("AuthProvider")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(32)
+                        .HasColumnType("varchar(32)")
+                        .HasDefaultValue("Local");
+
                     b.Property<DateTime>("CreatedAt")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("datetime(6)")
                         .HasDefaultValueSql("CURRENT_TIMESTAMP(6)");
+
+                    b.Property<DateTime?>("DeletedAt")
+                        .HasColumnType("datetime(6)");
 
                     b.Property<string>("DisplayName")
                         .HasMaxLength(100)
@@ -730,6 +768,22 @@ namespace LiveFuelMap.DAL.Persistence.Migrations
 
                     b.Property<bool>("EmailConfirmed")
                         .HasColumnType("tinyint(1)");
+
+                    b.Property<string>("ExternalProviderId")
+                        .HasMaxLength(255)
+                        .HasColumnType("varchar(255)");
+
+                    b.Property<string>("GoogleName")
+                        .HasMaxLength(100)
+                        .HasColumnType("varchar(100)");
+
+                    b.Property<bool>("IsDeleted")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("tinyint(1)")
+                        .HasDefaultValue(false);
+
+                    b.Property<DateTime?>("LastAccountDeletionTokenSentAt")
+                        .HasColumnType("datetime(6)");
 
                     b.Property<DateTime?>("LastEmailConfirmationSentAt")
                         .HasColumnType("datetime(6)");
@@ -771,6 +825,11 @@ namespace LiveFuelMap.DAL.Persistence.Migrations
                     b.Property<DateTime?>("RefreshTokenRevokedAt")
                         .HasColumnType("datetime(6)");
 
+                    b.Property<bool>("RequiresNicknameSetup")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("tinyint(1)")
+                        .HasDefaultValue(false);
+
                     b.Property<string>("Role")
                         .IsRequired()
                         .HasMaxLength(32)
@@ -786,11 +845,17 @@ namespace LiveFuelMap.DAL.Persistence.Migrations
                     b.HasIndex("Email")
                         .IsUnique();
 
+                    b.HasIndex("IsDeleted");
+
                     b.HasIndex("NormalizedNickname")
                         .IsUnique();
 
                     b.HasIndex("RefreshTokenHash")
                         .IsUnique();
+
+                    b.HasIndex("RequiresNicknameSetup");
+
+                    b.HasIndex("AuthProvider", "ExternalProviderId");
 
                     b.ToTable("users", (string)null);
                 });

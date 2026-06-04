@@ -23,48 +23,81 @@ public sealed class NicknameUnavailableException(string message, IReadOnlyList<s
     public IReadOnlyList<string> Suggestions { get; } = suggestions;
 }
 
+public sealed class CaptchaVerificationException(string message) : InvalidOperationException(message);
+
+public sealed class ValidationFailedException(string message, IReadOnlyDictionary<string, string[]> errors) : InvalidOperationException(message)
+{
+    public IReadOnlyDictionary<string, string[]> Errors { get; } = errors;
+}
+
+public sealed class AuthenticationFailedException(string message, IReadOnlyDictionary<string, string[]> errors) : InvalidOperationException(message)
+{
+    public IReadOnlyDictionary<string, string[]> Errors { get; } = errors;
+}
+
 public sealed class AuthService(
     IUnitOfWork unitOfWork,
     IPasswordHasher passwordHasher,
     ITokenHasher tokenHasher,
     ITokenService tokenService,
+    ICaptchaVerificationService captchaVerificationService,
     IEmailSender emailSender,
     IOptions<JwtOptions> jwtOptions,
     ILogger<AuthService> logger) : IAuthService
 {
     private static readonly TimeSpan EmailVerificationCodeLifetime = TimeSpan.FromMinutes(15);
     private static readonly TimeSpan EmailVerificationResendDelay = TimeSpan.FromMinutes(1);
+    private static readonly Regex EmailRegex = new(@"^[^\s@]+@[^\s@]+\.[^\s@]{2,}$", RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+    private static readonly HashSet<string> ObviousPasswords = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "123456",
+        "12345678",
+        "123456789",
+        "password",
+        "qwerty",
+        "111111",
+        "admin",
+        "admin123"
+    };
     private readonly JwtOptions _jwtOptions = jwtOptions.Value;
 
     public async Task RegisterAsync(RegisterRequest request, CancellationToken cancellationToken = default)
     {
-        if (string.IsNullOrWhiteSpace(request.Email) || string.IsNullOrWhiteSpace(request.Password))
-            throw new InvalidOperationException("Email and password are required.");
-
+        var errors = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+        var email = NormalizeEmail(request.Email);
         var displayName = NormalizeDisplayName(request.DisplayName);
         var nickname = NormalizeNicknameInput(request.Nickname);
         var normalizedNickname = NormalizeNickname(nickname);
 
+        ValidateEmail(email, errors);
+
         if (displayName.Length < 2)
-            throw new InvalidOperationException("Name must contain at least 2 characters.");
+            AddError(errors, "displayName", "Ім'я має містити мінімум 2 символи.");
 
         if (!IsValidNickname(nickname))
-            throw new InvalidOperationException("Nickname must contain 3-24 letters, numbers, underscores or hyphens.");
+            AddError(errors, "nickname", "Нікнейм має містити 3-24 літери, цифри, дефіс або underscore.");
 
-        if (request.Password != request.ConfirmPassword)
-            throw new InvalidOperationException("Passwords do not match.");
+        ValidateRegistrationPassword(request.Password, errors);
 
-        if (request.Password.Length < 6)
-            throw new InvalidOperationException("Password must contain at least 6 characters.");
+        if (string.IsNullOrWhiteSpace(request.ConfirmPassword))
+            AddError(errors, "confirmPassword", "Повторіть пароль.");
+        else if (request.Password != request.ConfirmPassword)
+            AddError(errors, "confirmPassword", "Паролі не збігаються.");
 
-        var email = request.Email.Trim().ToLowerInvariant();
+        ThrowIfValidationFailed(errors);
+
+        await captchaVerificationService.VerifyAsync(request.CaptchaToken, cancellationToken);
+
         if (await unitOfWork.Users.ExistsAsync(x => x.Email == email, cancellationToken))
-            throw new InvalidOperationException("User already exists.");
+        {
+            AddError(errors, "email", "Користувач з таким email вже існує.");
+            ThrowIfValidationFailed(errors, "Не вдалося створити акаунт.");
+        }
 
         if (await unitOfWork.Users.ExistsAsync(x => x.NormalizedNickname == normalizedNickname, cancellationToken))
         {
             var suggestions = await SuggestNicknamesAsync(nickname, 3, cancellationToken);
-            throw new NicknameUnavailableException("Nickname is already used.", suggestions);
+            throw new NicknameUnavailableException("Цей нікнейм уже використовується.", suggestions);
         }
 
         var now = DateTime.UtcNow;
@@ -91,16 +124,42 @@ public sealed class AuthService(
 
     public async Task<AuthResultDto> LoginAsync(LoginRequest request, CancellationToken cancellationToken = default)
     {
-        if (string.IsNullOrWhiteSpace(request.Email) || string.IsNullOrWhiteSpace(request.Password))
-            throw new InvalidOperationException("Invalid credentials.");
+        var errors = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+        var email = NormalizeEmail(request.Email);
+        ValidateEmail(email, errors);
 
-        var email = request.Email.Trim().ToLowerInvariant();
-        var user = await unitOfWork.Users.Query().FirstOrDefaultAsync(x => x.Email == email, cancellationToken);
+        if (string.IsNullOrWhiteSpace(request.Password))
+            AddError(errors, "password", "Введіть пароль.");
+        else if (request.Password.Length < 6)
+            AddError(errors, "password", "Пароль має містити мінімум 6 символів.");
 
-        if (user is null || !passwordHasher.Verify(request.Password, user.PasswordHash))
+        ThrowIfValidationFailed(errors);
+
+        await captchaVerificationService.VerifyAsync(request.CaptchaToken, cancellationToken);
+
+        var user = await unitOfWork.Users.Query()
+            .FirstOrDefaultAsync(x => x.Email == email && !x.IsDeleted, cancellationToken);
+
+        if (user is null)
+        {
+            logger.LogWarning("Failed login for unknown email {Email}", email);
+            throw new AuthenticationFailedException(
+                "Користувача з таким email не знайдено.",
+                ToErrorDictionary(new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["email"] = ["Користувача з таким email не знайдено."]
+                }));
+        }
+
+        if (!passwordHasher.Verify(request.Password, user.PasswordHash))
         {
             logger.LogWarning("Failed login for {Email}", email);
-            throw new InvalidOperationException("Invalid credentials.");
+            throw new AuthenticationFailedException(
+                "Невірний пароль.",
+                ToErrorDictionary(new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["password"] = ["Невірний пароль."]
+                }));
         }
 
         user.LastLoginAt = DateTime.UtcNow;
@@ -109,6 +168,92 @@ public sealed class AuthService(
 
         logger.LogInformation("Successful login for {Email}", email);
         return result;
+    }
+
+    public async Task<AuthResultDto> LoginWithGoogleAsync(GoogleAccountDto googleAccount, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(googleAccount.Email))
+            throw new InvalidOperationException("Google account does not contain an email address.");
+
+        if (!googleAccount.EmailVerified)
+            throw new InvalidOperationException("Google account email is not verified.");
+
+        if (string.IsNullOrWhiteSpace(googleAccount.ProviderUserId))
+            throw new InvalidOperationException("Google account identifier is missing.");
+
+        var email = googleAccount.Email.Trim().ToLowerInvariant();
+        var providerUserId = googleAccount.ProviderUserId.Trim();
+
+        var user = await unitOfWork.Users.Query()
+            .FirstOrDefaultAsync(x =>
+                !x.IsDeleted &&
+                ((x.AuthProvider == "Google" && x.ExternalProviderId == providerUserId) ||
+                x.Email == email),
+                cancellationToken);
+
+        var isNewUser = false;
+        if (user is null)
+        {
+            isNewUser = true;
+            var googleName = NormalizeDisplayName(googleAccount.DisplayName);
+            if (googleName.Length < 2)
+                googleName = null;
+
+            user = new User
+            {
+                Email = email,
+                DisplayName = null,
+                Nickname = null,
+                NormalizedNickname = null,
+                ProfileImageUrl = NormalizeGoogleProfileImageUrl(googleAccount.ProfileImageUrl),
+                PasswordHash = passwordHasher.Hash(CreateSecret()),
+                Role = UserRole.User,
+                EmailConfirmed = true,
+                AuthProvider = "Google",
+                ExternalProviderId = providerUserId,
+                GoogleName = googleName,
+                RequiresNicknameSetup = true
+            };
+
+            await unitOfWork.Users.AddAsync(user, cancellationToken);
+        }
+        else
+        {
+            user.AuthProvider = "Google";
+            user.ExternalProviderId = providerUserId;
+            user.EmailConfirmed = true;
+            user.EmailConfirmationTokenHash = null;
+            user.EmailConfirmationTokenExpiresAt = null;
+            user.LastEmailConfirmationSentAt = null;
+
+            var googleName = NormalizeDisplayName(googleAccount.DisplayName);
+            if (!string.IsNullOrWhiteSpace(googleName))
+                user.GoogleName = googleName;
+
+            var profileImageUrl = NormalizeGoogleProfileImageUrl(googleAccount.ProfileImageUrl);
+            if (!string.IsNullOrWhiteSpace(profileImageUrl) && string.IsNullOrWhiteSpace(user.ProfileImageUrl))
+                user.ProfileImageUrl = profileImageUrl;
+
+            if (string.Equals(user.AuthProvider, "Google", StringComparison.OrdinalIgnoreCase) &&
+                string.IsNullOrWhiteSpace(user.Nickname))
+            {
+                user.RequiresNicknameSetup = true;
+            }
+        }
+
+        user.LastLoginAt = DateTime.UtcNow;
+        if (isNewUser)
+            await unitOfWork.SaveChangesAsync(cancellationToken);
+
+        var result = IssueTokens(user);
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+
+        logger.LogInformation("Successful Google login for {Email}", email);
+        return result with
+        {
+            RequiresNickname = user.RequiresNicknameSetup,
+            SuggestedNickname = user.RequiresNicknameSetup ? CreateNicknameSuggestionFromEmail(email) : null
+        };
     }
 
     public async Task<AuthResultDto> RefreshAsync(RefreshTokenRequest request, CancellationToken cancellationToken = default)
@@ -122,6 +267,7 @@ public sealed class AuthService(
             .FirstOrDefaultAsync(x => x.RefreshTokenHash == refreshTokenHash, cancellationToken);
 
         if (user is null ||
+            user.IsDeleted ||
             user.RefreshTokenRevokedAt is not null ||
             user.RefreshTokenExpiresAt is null ||
             user.RefreshTokenExpiresAt <= now)
@@ -140,6 +286,9 @@ public sealed class AuthService(
     {
         var user = await unitOfWork.Users.GetByIdAsync(userId, cancellationToken)
             ?? throw new InvalidOperationException("User not found.");
+
+        if (user.IsDeleted)
+            throw new InvalidOperationException("User not found.");
 
         user.RefreshTokenHash = null;
         user.RefreshTokenExpiresAt = null;
@@ -164,10 +313,13 @@ public sealed class AuthService(
         var user = await unitOfWork.Users.GetByIdAsync(userId, cancellationToken)
             ?? throw new InvalidOperationException("User not found.");
 
+        if (user.IsDeleted)
+            throw new InvalidOperationException("User not found.");
+
         if (!passwordHasher.Verify(request.CurrentPassword, user.PasswordHash))
         {
             logger.LogWarning("Failed password change for {Email}", user.Email);
-            throw new InvalidOperationException("Invalid credentials.");
+            throw new InvalidOperationException("Поточний пароль неправильний.");
         }
 
         user.PasswordHash = passwordHasher.Hash(request.NewPassword);
@@ -183,6 +335,9 @@ public sealed class AuthService(
     {
         var user = await unitOfWork.Users.GetByIdAsync(userId, cancellationToken)
             ?? throw new InvalidOperationException("User not found.");
+
+        if (user.IsDeleted)
+            throw new InvalidOperationException("User not found.");
 
         if (user.EmailConfirmed)
             return;
@@ -208,6 +363,9 @@ public sealed class AuthService(
     {
         var user = await unitOfWork.Users.GetByIdAsync(userId, cancellationToken)
             ?? throw new InvalidOperationException("User not found.");
+
+        if (user.IsDeleted)
+            throw new InvalidOperationException("User not found.");
 
         if (user.EmailConfirmed)
             throw new InvalidOperationException("Email is already verified.");
@@ -271,6 +429,9 @@ public sealed class AuthService(
         var user = await unitOfWork.Users.GetByIdAsync(userId, cancellationToken)
             ?? throw new InvalidOperationException("User not found.");
 
+        if (user.IsDeleted)
+            throw new InvalidOperationException("User not found.");
+
         return new CurrentUserDto(
             user.Id,
             user.Email,
@@ -279,8 +440,69 @@ public sealed class AuthService(
             GetDisplayName(user),
             GetNickname(user),
             GetProfileImageUrl(user),
-            user.EmailConfirmed);
+            user.EmailConfirmed,
+            user.AuthProvider,
+            user.RequiresNicknameSetup);
     }
+
+    private static string NormalizeEmail(string? email) =>
+        (email ?? string.Empty).Trim().ToLowerInvariant();
+
+    private static void ValidateEmail(string email, IDictionary<string, List<string>> errors)
+    {
+        if (string.IsNullOrWhiteSpace(email))
+        {
+            AddError(errors, "email", "Введіть email.");
+            return;
+        }
+
+        if (!EmailRegex.IsMatch(email))
+            AddError(errors, "email", "Введіть коректний email.");
+    }
+
+    private static void ValidateRegistrationPassword(string? password, IDictionary<string, List<string>> errors)
+    {
+        if (string.IsNullOrWhiteSpace(password))
+        {
+            AddError(errors, "password", "Введіть пароль.");
+            return;
+        }
+
+        if (password.Length < 8)
+            AddError(errors, "password", "Пароль має містити мінімум 8 символів.");
+
+        var categories = 0;
+        if (password.Any(char.IsLower)) categories++;
+        if (password.Any(char.IsUpper)) categories++;
+        if (password.Any(char.IsDigit)) categories++;
+        if (password.Any(ch => !char.IsLetterOrDigit(ch))) categories++;
+
+        if (categories < 2)
+            AddError(errors, "password", "Додайте до пароля літери різного регістру, цифри або спецсимволи.");
+
+        if (ObviousPasswords.Contains(password.Trim()))
+            AddError(errors, "password", "Оберіть менш очевидний пароль.");
+    }
+
+    private static void AddError(IDictionary<string, List<string>> errors, string field, string message)
+    {
+        if (!errors.TryGetValue(field, out var items))
+        {
+            items = [];
+            errors[field] = items;
+        }
+
+        items.Add(message);
+    }
+
+    private static void ThrowIfValidationFailed(Dictionary<string, List<string>> errors, string message = "Перевірте правильність заповнення форми.")
+    {
+        if (errors.Count > 0)
+            throw new ValidationFailedException(message, ToErrorDictionary(errors));
+    }
+
+    private static IReadOnlyDictionary<string, string[]> ToErrorDictionary(Dictionary<string, List<string>> errors) =>
+        errors.ToDictionary(pair => pair.Key, pair => pair.Value.Distinct().ToArray(), StringComparer.OrdinalIgnoreCase);
 
     private static string CreateSecret()
     {
@@ -302,7 +524,7 @@ public sealed class AuthService(
         string.IsNullOrWhiteSpace(user.DisplayName) ? CreateDefaultDisplayName(user.Email) : user.DisplayName.Trim();
 
     private static string GetNickname(User user) =>
-        string.IsNullOrWhiteSpace(user.Nickname) ? CreateDefaultDisplayName(user.Email) : user.Nickname.Trim();
+        string.IsNullOrWhiteSpace(user.Nickname) ? string.Empty : user.Nickname.Trim();
 
     private static string GetProfileImageUrl(User user) =>
         string.IsNullOrWhiteSpace(user.ProfileImageUrl) ? "default-station.jpg" : user.ProfileImageUrl.Trim();
@@ -311,13 +533,38 @@ public sealed class AuthService(
         Regex.Replace((displayName ?? string.Empty).Trim(), @"\s+", " ");
 
     private static string NormalizeNicknameInput(string? nickname) =>
-        Regex.Replace((nickname ?? string.Empty).Trim(), @"\s+", "-");
+        (nickname ?? string.Empty).Trim();
 
     private static string NormalizeNickname(string nickname) =>
         nickname.Trim().ToLowerInvariant();
 
     private static bool IsValidNickname(string nickname) =>
         Regex.IsMatch(nickname, @"^[\p{L}\p{Nd}_-]{3,24}$");
+
+    private static string CreateNicknameSuggestionFromEmail(string email)
+    {
+        var localPart = email.Split('@')[0];
+        var baseNickname = NormalizeNicknameInput(localPart);
+        baseNickname = Regex.Replace(baseNickname, @"[^\p{L}\p{Nd}_-]+", string.Empty);
+        baseNickname = Regex.Replace(baseNickname, @"[-_]{2,}", "-").Trim('-', '_');
+
+        if (baseNickname.Length < 3)
+            return "user";
+
+        return baseNickname.Length > 24 ? baseNickname[..24].Trim('-', '_') : baseNickname;
+    }
+
+    private static string? NormalizeGoogleProfileImageUrl(string? profileImageUrl)
+    {
+        var normalized = profileImageUrl?.Trim();
+        if (string.IsNullOrWhiteSpace(normalized) || normalized.Length > 500)
+            return null;
+
+        return Uri.TryCreate(normalized, UriKind.Absolute, out var uri) &&
+            (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps)
+            ? normalized
+            : null;
+    }
 
     private Task SendVerificationEmailAsync(string email, string code, DateTime expiresAt, CancellationToken cancellationToken)
     {
@@ -394,7 +641,10 @@ public sealed class AuthService(
             accessToken.Token,
             refreshToken,
             accessToken.ExpiresAt,
-            refreshExpiresAt);
+            refreshExpiresAt,
+            RequiresNickname: user.RequiresNicknameSetup,
+            SuggestedNickname: user.RequiresNicknameSetup ? CreateNicknameSuggestionFromEmail(user.Email) : null,
+            AuthProvider: user.AuthProvider);
     }
 }
 
@@ -665,6 +915,74 @@ public sealed class CommentService(IUnitOfWork unitOfWork) : ICommentService
 {
     private static readonly TimeSpan NewAccountCommentDelay = TimeSpan.FromMinutes(10);
 
+    public async Task<PagedResult<AdminCommentDto>> ListAdminAsync(CommentAdminQuery query, CancellationToken cancellationToken = default)
+    {
+        var page = Math.Max(1, query.Page);
+        var pageSize = Math.Clamp(query.PageSize, 1, 100);
+        var commentsQuery = unitOfWork.Comments.Query()
+            .AsNoTracking()
+            .Include(x => x.User)
+            .Include(x => x.Station)
+            .Include(x => x.Fuel)
+            .AsQueryable();
+
+        var search = query.Search?.Trim();
+        if (!string.IsNullOrWhiteSpace(search))
+        {
+            var pattern = $"%{search}%";
+            commentsQuery = commentsQuery.Where(x =>
+                EF.Functions.Like(x.Content, pattern) ||
+                EF.Functions.Like(x.User.Email, pattern) ||
+                (x.User.Nickname != null && EF.Functions.Like(x.User.Nickname, pattern)) ||
+                (x.User.NormalizedNickname != null && EF.Functions.Like(x.User.NormalizedNickname, pattern)) ||
+                (x.User.DisplayName != null && EF.Functions.Like(x.User.DisplayName, pattern)) ||
+                EF.Functions.Like(x.Station.Name, pattern) ||
+                (x.Fuel != null && EF.Functions.Like(x.Fuel.Name, pattern)));
+        }
+
+        var author = query.Author?.Trim().ToLowerInvariant();
+        commentsQuery = author switch
+        {
+            "registered" => commentsQuery.Where(x => !x.User.IsDeleted),
+            "deleted" => commentsQuery.Where(x => x.User.IsDeleted),
+            "guest" => commentsQuery.Where(_ => false),
+            _ => commentsQuery
+        };
+
+        var status = query.Status?.Trim().ToLowerInvariant();
+        commentsQuery = status switch
+        {
+            null or "" or "published" or "active" => commentsQuery,
+            _ => commentsQuery.Where(_ => false)
+        };
+
+        if (query.DateFrom is not null)
+        {
+            var dateFrom = query.DateFrom.Value.Date;
+            commentsQuery = commentsQuery.Where(x => x.CreatedAt >= dateFrom);
+        }
+
+        if (query.DateTo is not null)
+        {
+            var dateToExclusive = query.DateTo.Value.Date.AddDays(1);
+            commentsQuery = commentsQuery.Where(x => x.CreatedAt < dateToExclusive);
+        }
+
+        var totalCount = await commentsQuery.CountAsync(cancellationToken);
+        var comments = await commentsQuery
+            .OrderByDescending(x => x.CreatedAt)
+            .ThenByDescending(x => x.Id)
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
+            .ToListAsync(cancellationToken);
+
+        return new PagedResult<AdminCommentDto>(
+            comments.Select(ToAdminDto).ToList(),
+            page,
+            pageSize,
+            totalCount);
+    }
+
     public async Task<IReadOnlyList<CommentDto>> ListAsync(int? stationId = null, string? search = null, int take = 200, CancellationToken cancellationToken = default)
     {
         take = Math.Clamp(take, 1, 500);
@@ -720,6 +1038,12 @@ public sealed class CommentService(IUnitOfWork unitOfWork) : ICommentService
     {
         var user = await unitOfWork.Users.GetByIdAsync(userId, cancellationToken)
             ?? throw new InvalidOperationException("User not found.");
+
+        if (user.IsDeleted)
+            throw new InvalidOperationException("User not found.");
+
+        if (user.RequiresNicknameSetup)
+            throw new InvalidOperationException("Complete nickname setup first.");
 
         var allowedAt = user.CreatedAt.Add(NewAccountCommentDelay);
         if (DateTime.UtcNow < allowedAt)
@@ -874,11 +1198,39 @@ public sealed class CommentService(IUnitOfWork unitOfWork) : ICommentService
             comment.Station.Name,
             comment.FuelId,
             comment.Fuel?.Name,
-            MaskEmail(comment.User.Email),
+            comment.User.IsDeleted ? "Deleted user" : MaskEmail(comment.User.Email),
             comment.Content,
             comment.Rating,
             comment.CreatedAt,
             comment.UpdatedAt);
+
+    private static AdminCommentDto ToAdminDto(Comment comment)
+    {
+        var nickname = comment.User.Nickname ?? string.Empty;
+        var authorName = !string.IsNullOrWhiteSpace(comment.User.DisplayName)
+            ? comment.User.DisplayName!
+            : !string.IsNullOrWhiteSpace(nickname)
+                ? nickname
+                : comment.User.Email;
+        var authorType = comment.User.IsDeleted ? "deleted" : "registered";
+
+        return new AdminCommentDto(
+            comment.Id,
+            comment.UserId,
+            comment.User.Email,
+            nickname,
+            comment.User.IsDeleted ? "Deleted user" : authorName,
+            authorType,
+            comment.StationId,
+            comment.Station.Name,
+            comment.FuelId,
+            comment.Fuel?.Name,
+            comment.Content,
+            comment.Rating,
+            comment.CreatedAt,
+            comment.UpdatedAt,
+            "published");
+    }
 
     private static string MaskEmail(string email)
     {
@@ -1015,71 +1367,132 @@ internal static class StationPhotoUrls
 
 public sealed class SubscriptionService(
     IUnitOfWork unitOfWork,
-    ISubscriptionEmailNotifier subscriptionEmailNotifier,
-    ILogger<SubscriptionService> logger) : ISubscriptionService
+    ISubscriptionNotificationQueue notificationQueue) : ISubscriptionService
 {
+    private static readonly Regex EmailRegex = new(@"^[^@\s]+@[^@\s]+\.[^@\s]+$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    private static readonly TimeSpan DefaultSendTime = new(9, 0, 0);
+
     public async Task<IReadOnlyList<SubscriptionDto>> ListAsync(int userId, CancellationToken cancellationToken = default)
     {
-        return await unitOfWork.Subscriptions.Query()
+        var subscriptions = await unitOfWork.Subscriptions.Query()
             .AsNoTracking()
+            .Include(x => x.User)
             .Include(x => x.Fuel)
             .Where(x => x.UserId == userId)
-            .OrderBy(x => x.City)
+            .OrderByDescending(x => x.IsActive)
+            .ThenBy(x => x.City)
             .ThenBy(x => x.Fuel.SortOrder)
-            .Select(x => new SubscriptionDto(
-                x.Id,
-                x.FuelId,
-                x.Fuel.Code,
-                x.Fuel.Name,
-                x.City,
-                x.Frequency,
-                x.CreatedAt))
             .ToListAsync(cancellationToken);
+
+        return subscriptions.Select(ToDto).ToList();
     }
 
-    public async Task CreateAsync(int userId, SubscriptionRequest request, CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<SubscriptionDto>> CreateAsync(int userId, SubscriptionRequest request, CancellationToken cancellationToken = default)
     {
-        var city = request.City.Trim().ToLowerInvariant();
-
-        var user = await unitOfWork.Users.GetByIdAsync(userId, cancellationToken)
-            ?? throw new InvalidOperationException("User not found.");
-
-        if (!user.EmailConfirmed)
-            throw new InvalidOperationException("Email must be verified before subscribing to email notifications.");
+        var user = await ValidateUserAsync(userId, cancellationToken);
+        var city = NormalizeCity(request.City);
+        var email = ResolveConfirmedProfileEmail(user);
+        var sendTime = ParseSendTime(request.SendTime);
+        var fuelIds = NormalizeFuelIds(request);
 
         if (string.IsNullOrWhiteSpace(city))
-            throw new InvalidOperationException("City is required.");
+            throw new InvalidOperationException("Місто є обов'язковим.");
 
-        if (!await unitOfWork.Fuels.ExistsAsync(x => x.Id == request.FuelId, cancellationToken))
-            throw new InvalidOperationException("Fuel not found.");
+        var existingFuelIds = await unitOfWork.Fuels.Query()
+            .AsNoTracking()
+            .Where(x => fuelIds.Contains(x.Id))
+            .Select(x => x.Id)
+            .ToListAsync(cancellationToken);
 
-        var exists = await unitOfWork.Subscriptions.ExistsAsync(
-            x => x.UserId == userId && x.FuelId == request.FuelId && x.City == city && x.Frequency == request.Frequency,
-            cancellationToken);
+        if (existingFuelIds.Count != fuelIds.Count)
+            throw new InvalidOperationException("Один або кілька типів пального не знайдено.");
 
-        if (exists)
-            throw new InvalidOperationException("Subscription already exists.");
+        var subscriptions = await unitOfWork.Subscriptions.Query()
+            .Include(x => x.Fuel)
+            .Include(x => x.User)
+            .Where(x => x.UserId == userId && x.City == city && fuelIds.Contains(x.FuelId))
+            .ToListAsync(cancellationToken);
 
-        var subscription = new Subscription
+        var now = DateTime.UtcNow;
+        foreach (var fuelId in fuelIds)
         {
-            UserId = userId,
-            FuelId = request.FuelId,
-            City = city,
-            Frequency = request.Frequency
-        };
+            var subscription = subscriptions.FirstOrDefault(x => x.FuelId == fuelId);
+            if (subscription is null)
+            {
+                subscription = new Subscription
+                {
+                    UserId = userId,
+                    FuelId = fuelId,
+                    City = city,
+                    Email = email,
+                    Frequency = request.Frequency,
+                    SendTime = sendTime,
+                    IsActive = request.IsActive,
+                    CreatedAt = now
+                };
 
-        await unitOfWork.Subscriptions.AddAsync(subscription, cancellationToken);
+                await unitOfWork.Subscriptions.AddAsync(subscription, cancellationToken);
+                subscriptions.Add(subscription);
+                continue;
+            }
+
+            subscription.Email = email;
+            subscription.Frequency = request.Frequency;
+            subscription.SendTime = sendTime;
+            subscription.IsActive = request.IsActive;
+            subscription.UpdatedAt = now;
+        }
 
         await unitOfWork.SaveChangesAsync(cancellationToken);
 
-        try
-        {
-            await subscriptionEmailNotifier.NotifySubscriptionCreatedAsync(userId, subscription.Id, cancellationToken);
-        }
-        catch (Exception ex)
-        {
-            logger.LogError(ex, "Failed to send subscription emails for user {UserId}", userId);
-        }
+        foreach (var subscription in subscriptions.Where(x => fuelIds.Contains(x.FuelId)))
+            notificationQueue.QueueSubscriptionCreated(userId, subscription.Id);
+
+        return await ListByIdsAsync(userId, subscriptions.Select(x => x.Id).ToList(), cancellationToken);
+    }
+
+    public async Task<SubscriptionDto?> UpdateAsync(int userId, int id, SubscriptionRequest request, CancellationToken cancellationToken = default)
+    {
+        var user = await ValidateUserAsync(userId, cancellationToken);
+        var subscription = await unitOfWork.Subscriptions.Query()
+            .Include(x => x.Fuel)
+            .Include(x => x.User)
+            .FirstOrDefaultAsync(x => x.Id == id && x.UserId == userId, cancellationToken);
+
+        if (subscription is null)
+            return null;
+
+        var fuelIds = NormalizeFuelIds(request);
+        var fuelId = fuelIds[0];
+        if (!await unitOfWork.Fuels.ExistsAsync(x => x.Id == fuelId, cancellationToken))
+            throw new InvalidOperationException("Тип пального не знайдено.");
+
+        var city = NormalizeCity(request.City);
+        if (string.IsNullOrWhiteSpace(city))
+            throw new InvalidOperationException("Місто є обов'язковим.");
+
+        var duplicate = await unitOfWork.Subscriptions.ExistsAsync(
+            x => x.Id != id && x.UserId == userId && x.FuelId == fuelId && x.City == city,
+            cancellationToken);
+        if (duplicate)
+            throw new InvalidOperationException("Підписка з таким містом і типом пального вже існує.");
+
+        subscription.FuelId = fuelId;
+        subscription.City = city;
+        subscription.Email = ResolveConfirmedProfileEmail(user);
+        subscription.Frequency = request.Frequency;
+        subscription.SendTime = ParseSendTime(request.SendTime);
+        subscription.IsActive = request.IsActive;
+        subscription.UpdatedAt = DateTime.UtcNow;
+
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+
+        var updated = await unitOfWork.Subscriptions.Query()
+            .AsNoTracking()
+            .Include(x => x.User)
+            .Include(x => x.Fuel)
+            .FirstAsync(x => x.Id == id && x.UserId == userId, cancellationToken);
+        return ToDto(updated);
     }
 
     public async Task<bool> DeleteAsync(int userId, int id, CancellationToken cancellationToken = default)
@@ -1094,19 +1507,126 @@ public sealed class SubscriptionService(
         await unitOfWork.SaveChangesAsync(cancellationToken);
         return true;
     }
+
+    private async Task<User> ValidateUserAsync(int userId, CancellationToken cancellationToken)
+    {
+        var user = await unitOfWork.Users.GetByIdAsync(userId, cancellationToken)
+            ?? throw new InvalidOperationException("Користувача не знайдено.");
+
+        if (!user.EmailConfirmed)
+            throw new InvalidOperationException("Підтвердьте email перед оформленням розсилки.");
+
+        if (user.RequiresNicknameSetup)
+            throw new InvalidOperationException("Спочатку завершіть налаштування нікнейму.");
+
+        return user;
+    }
+
+    private async Task<IReadOnlyList<SubscriptionDto>> ListByIdsAsync(int userId, IReadOnlyList<int> ids, CancellationToken cancellationToken)
+    {
+        var subscriptions = await unitOfWork.Subscriptions.Query()
+            .AsNoTracking()
+            .Include(x => x.User)
+            .Include(x => x.Fuel)
+            .Where(x => x.UserId == userId && ids.Contains(x.Id))
+            .OrderBy(x => x.Fuel.SortOrder)
+            .ToListAsync(cancellationToken);
+
+        return subscriptions.Select(ToDto).ToList();
+    }
+
+    private static IReadOnlyList<int> NormalizeFuelIds(SubscriptionRequest request)
+    {
+        var requestedFuelIds = request.FuelIds is { Count: > 0 }
+            ? request.FuelIds
+            : request.FuelId is null
+                ? Array.Empty<int>()
+                : [request.FuelId.Value];
+
+        var fuelIds = requestedFuelIds
+            .Where(x => x > 0)
+            .Distinct()
+            .ToList();
+
+        if (fuelIds.Count == 0)
+            throw new InvalidOperationException("Оберіть хоча б один тип пального.");
+
+        return fuelIds;
+    }
+
+    private static string NormalizeCity(string city) =>
+        (city ?? string.Empty).Trim().ToLowerInvariant();
+
+    private static string ResolveConfirmedProfileEmail(User user)
+    {
+        var email = user.Email.Trim().ToLowerInvariant();
+        if (!EmailRegex.IsMatch(email))
+            throw new InvalidOperationException("У профілі вказано некоректний email.");
+
+        return email;
+    }
+
+    private static TimeSpan ParseSendTime(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return DefaultSendTime;
+
+        var normalized = value.Trim();
+        if (TimeSpan.TryParse(normalized, out var parsed) && parsed >= TimeSpan.Zero && parsed < TimeSpan.FromDays(1))
+            return new TimeSpan(parsed.Hours, parsed.Minutes, 0);
+
+        throw new InvalidOperationException("Вкажіть коректний час відправки.");
+    }
+
+    private static string FormatSendTime(TimeSpan value) =>
+        $"{value.Hours:00}:{value.Minutes:00}";
+
+    private static SubscriptionDto ToDto(Subscription subscription) =>
+        new(
+            subscription.Id,
+            subscription.FuelId,
+            subscription.Fuel.Code,
+            subscription.Fuel.Name,
+            subscription.City,
+            subscription.Frequency,
+            FormatSendTime(subscription.SendTime),
+            string.IsNullOrWhiteSpace(subscription.Email) ? subscription.User.Email : subscription.Email,
+            subscription.IsActive,
+            subscription.LastSentAt,
+            subscription.CreatedAt,
+            subscription.UpdatedAt);
 }
 
 public sealed class ApiTokenService(IUnitOfWork unitOfWork, ITokenHasher tokenHasher) : IApiTokenService
 {
-    public async Task<ApiTokenCreatedDto> CreateAsync(int adminUserId, ApiTokenCreateRequest request, CancellationToken cancellationToken = default)
+    public Task<ApiTokenCreatedDto> CreateAsync(int adminUserId, ApiTokenCreateRequest request, CancellationToken cancellationToken = default) =>
+        CreateInternalAsync(adminUserId, request, cancellationToken);
+
+    private async Task<ApiTokenCreatedDto> CreateInternalAsync(int userId, ApiTokenCreateRequest request, CancellationToken cancellationToken)
     {
+        var name = NormalizeTokenDisplayName(request.Name);
+        var normalizedName = NormalizeTokenComparisonName(name);
+        var scopes = NormalizeScopes(request.Scopes);
+        var now = DateTime.UtcNow;
+        var activeNames = await unitOfWork.ApiTokens.Query()
+            .AsNoTracking()
+            .Where(x =>
+                x.CreatedByUserId == userId &&
+                x.RevokedAt == null &&
+                (x.ExpiresAt == null || x.ExpiresAt > now))
+            .Select(x => x.Name)
+            .ToListAsync(cancellationToken);
+
+        if (activeNames.Any(x => NormalizeTokenComparisonName(x) == normalizedName))
+            throw new InvalidOperationException("Інтеграція з такою назвою вже існує.");
+
         var rawToken = $"lfm_{CreateSecret()}";
         var token = new ApiToken
         {
-            Name = request.Name.Trim(),
-            Scopes = string.IsNullOrWhiteSpace(request.Scopes) ? "fuel:read" : request.Scopes.Trim(),
+            Name = name,
+            Scopes = scopes,
             ExpiresAt = request.ExpiresAt,
-            CreatedByUserId = adminUserId,
+            CreatedByUserId = userId,
             TokenHash = tokenHasher.Hash(rawToken)
         };
 
@@ -1115,27 +1635,121 @@ public sealed class ApiTokenService(IUnitOfWork unitOfWork, ITokenHasher tokenHa
         return new ApiTokenCreatedDto(token.Id, token.Name, rawToken, token.Scopes, token.ExpiresAt);
     }
 
-    public async Task<IReadOnlyList<ApiTokenDto>> ListAsync(CancellationToken cancellationToken = default)
+    public Task<PagedResult<ApiTokenDto>> ListAsync(ApiTokenQuery query, CancellationToken cancellationToken = default) =>
+        ListInternalAsync(query, createdByUserId: null, cancellationToken);
+
+    private async Task<PagedResult<ApiTokenDto>> ListInternalAsync(ApiTokenQuery query, int? createdByUserId, CancellationToken cancellationToken)
     {
-        return await unitOfWork.ApiTokens.Query()
+        var now = DateTime.UtcNow;
+        var page = Math.Max(1, query.Page);
+        var pageSize = Math.Clamp(query.PageSize, 1, 100);
+        var tokensQuery = unitOfWork.ApiTokens.Query()
+            .AsNoTracking()
             .Include(x => x.CreatedByUser)
+            .AsQueryable();
+
+        if (createdByUserId is not null)
+            tokensQuery = tokensQuery.Where(x => x.CreatedByUserId == createdByUserId.Value);
+
+        var search = query.Search?.Trim();
+        if (!string.IsNullOrWhiteSpace(search))
+        {
+            var pattern = $"%{search}%";
+            tokensQuery = tokensQuery.Where(x =>
+                EF.Functions.Like(x.Name, pattern) ||
+                EF.Functions.Like(x.Scopes, pattern) ||
+                EF.Functions.Like(x.CreatedByUser.Email, pattern) ||
+                (x.CreatedByUser.Nickname != null && EF.Functions.Like(x.CreatedByUser.Nickname, pattern)));
+        }
+
+        var scope = query.Scope?.Trim();
+        if (!string.IsNullOrWhiteSpace(scope))
+        {
+            var pattern = $"%{scope}%";
+            tokensQuery = tokensQuery.Where(x => EF.Functions.Like(x.Scopes, pattern));
+        }
+
+        var userEmail = query.UserEmail?.Trim();
+        if (!string.IsNullOrWhiteSpace(userEmail))
+        {
+            var pattern = $"%{userEmail}%";
+            tokensQuery = tokensQuery.Where(x => EF.Functions.Like(x.CreatedByUser.Email, pattern));
+        }
+
+        var status = query.Status?.Trim().ToLowerInvariant();
+        tokensQuery = status switch
+        {
+            "active" => tokensQuery.Where(x => x.RevokedAt == null && (x.ExpiresAt == null || x.ExpiresAt > now)),
+            "revoked" => tokensQuery.Where(x => x.RevokedAt != null),
+            "expired" => tokensQuery.Where(x => x.RevokedAt == null && x.ExpiresAt != null && x.ExpiresAt <= now),
+            _ => tokensQuery
+        };
+
+        if (query.CreatedFrom is not null)
+        {
+            var createdFrom = query.CreatedFrom.Value.Date;
+            tokensQuery = tokensQuery.Where(x => x.CreatedAt >= createdFrom);
+        }
+
+        if (query.CreatedTo is not null)
+        {
+            var createdToExclusive = query.CreatedTo.Value.Date.AddDays(1);
+            tokensQuery = tokensQuery.Where(x => x.CreatedAt < createdToExclusive);
+        }
+
+        if (query.ExpiresFrom is not null)
+        {
+            var expiresFrom = query.ExpiresFrom.Value.Date;
+            tokensQuery = tokensQuery.Where(x => x.ExpiresAt != null && x.ExpiresAt >= expiresFrom);
+        }
+
+        if (query.ExpiresTo is not null)
+        {
+            var expiresToExclusive = query.ExpiresTo.Value.Date.AddDays(1);
+            tokensQuery = tokensQuery.Where(x => x.ExpiresAt != null && x.ExpiresAt < expiresToExclusive);
+        }
+
+        var totalCount = await tokensQuery.CountAsync(cancellationToken);
+        var tokens = await tokensQuery
             .OrderByDescending(x => x.CreatedAt)
-            .Select(x => new ApiTokenDto(x.Id, x.Name, x.Scopes, x.CreatedAt, x.ExpiresAt, x.RevokedAt, x.CreatedByUserId, x.CreatedByUser.Email))
+            .ThenByDescending(x => x.Id)
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
             .ToListAsync(cancellationToken);
+
+        return new PagedResult<ApiTokenDto>(
+            tokens.Select(x => ToApiTokenDto(x, now)).ToList(),
+            page,
+            pageSize,
+            totalCount);
     }
 
-    public async Task<bool> RevokeAsync(int id, CancellationToken cancellationToken = default)
+    public Task<bool> RevokeAsync(int id, CancellationToken cancellationToken = default) =>
+        RevokeInternalAsync(id, createdByUserId: null, cancellationToken);
+
+    private async Task<bool> RevokeInternalAsync(int id, int? createdByUserId, CancellationToken cancellationToken)
     {
-        var token = await unitOfWork.ApiTokens.GetByIdAsync(id, cancellationToken);
+        var tokenQuery = unitOfWork.ApiTokens.Query();
+        if (createdByUserId is not null)
+            tokenQuery = tokenQuery.Where(x => x.CreatedByUserId == createdByUserId.Value);
+
+        var token = await tokenQuery.FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
         if (token is null) return false;
         token.RevokedAt = DateTime.UtcNow;
         await unitOfWork.SaveChangesAsync(cancellationToken);
         return true;
     }
 
-    public async Task<bool> DeleteAsync(int id, CancellationToken cancellationToken = default)
+    public Task<bool> DeleteAsync(int id, CancellationToken cancellationToken = default) =>
+        DeleteInternalAsync(id, createdByUserId: null, cancellationToken);
+
+    private async Task<bool> DeleteInternalAsync(int id, int? createdByUserId, CancellationToken cancellationToken)
     {
-        var token = await unitOfWork.ApiTokens.GetByIdAsync(id, cancellationToken);
+        var tokenQuery = unitOfWork.ApiTokens.Query();
+        if (createdByUserId is not null)
+            tokenQuery = tokenQuery.Where(x => x.CreatedByUserId == createdByUserId.Value);
+
+        var token = await tokenQuery.FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
         if (token is null) return false;
         unitOfWork.ApiTokens.Remove(token);
         await unitOfWork.SaveChangesAsync(cancellationToken);
@@ -1146,7 +1760,11 @@ public sealed class ApiTokenService(IUnitOfWork unitOfWork, ITokenHasher tokenHa
     {
         var now = DateTime.UtcNow;
         var candidates = await unitOfWork.ApiTokens.Query()
-            .Where(x => x.RevokedAt == null && (x.ExpiresAt == null || x.ExpiresAt > now))
+            .Include(x => x.CreatedByUser)
+            .Where(x =>
+                x.RevokedAt == null &&
+                (x.ExpiresAt == null || x.ExpiresAt > now) &&
+                !x.CreatedByUser.IsDeleted)
             .ToListAsync(cancellationToken);
 
         return candidates.Any(x =>
@@ -1174,6 +1792,59 @@ public sealed class ApiTokenService(IUnitOfWork unitOfWork, ITokenHasher tokenHa
         return false;
     }
 
+    private static ApiTokenDto ToApiTokenDto(ApiToken token, DateTime now) =>
+        new(
+            token.Id,
+            token.Name,
+            token.Scopes,
+            token.CreatedAt,
+            token.ExpiresAt,
+            token.RevokedAt,
+            token.CreatedByUserId,
+            token.CreatedByUser.Email,
+            GetTokenStatus(token, now));
+
+    private static string GetTokenStatus(ApiToken token, DateTime now)
+    {
+        if (token.RevokedAt is not null)
+            return "revoked";
+
+        if (token.ExpiresAt is not null && token.ExpiresAt <= now)
+            return "expired";
+
+        return "active";
+    }
+
+    private static string NormalizeScopes(string? value)
+    {
+        var scopes = string.IsNullOrWhiteSpace(value) ? "fuel:read" : value;
+        var normalizedScopes = scopes
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(x => x.ToLowerInvariant())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        if (normalizedScopes.Length == 0)
+            normalizedScopes = ["fuel:read"];
+
+        return string.Join(",", normalizedScopes);
+    }
+
+    private static string NormalizeTokenDisplayName(string value)
+    {
+        var normalized = Regex.Replace((value ?? string.Empty).Trim(), @"\s+", " ");
+        if (string.IsNullOrWhiteSpace(normalized))
+            throw new InvalidOperationException("Token name is required.");
+
+        if (normalized.Length > 100)
+            throw new InvalidOperationException("Token name is too long.");
+
+        return normalized;
+    }
+
+    private static string NormalizeTokenComparisonName(string value) =>
+        Regex.Replace((value ?? string.Empty).Trim(), @"\s+", " ").ToUpperInvariant();
+
     private static string CreateSecret()
     {
         Span<byte> bytes = stackalloc byte[32];
@@ -1184,13 +1855,63 @@ public sealed class ApiTokenService(IUnitOfWork unitOfWork, ITokenHasher tokenHa
 
 public sealed class UserAdminService(IUnitOfWork unitOfWork) : IUserAdminService
 {
-    public async Task<IReadOnlyList<UserAdminDto>> ListAsync(CancellationToken cancellationToken = default)
+    public async Task<PagedResult<UserAdminDto>> ListAsync(UserAdminQuery query, CancellationToken cancellationToken = default)
     {
-        var users = await unitOfWork.Users.Query()
+        var page = Math.Max(1, query.Page);
+        var pageSize = Math.Clamp(query.PageSize, 1, 100);
+        var usersQuery = unitOfWork.Users.Query().AsNoTracking();
+
+        var search = query.Search?.Trim();
+        if (!string.IsNullOrWhiteSpace(search))
+        {
+            var pattern = $"%{search}%";
+            var matchingRoles = Enum.GetValues<UserRole>()
+                .Where(x => x.ToString().Contains(search, StringComparison.OrdinalIgnoreCase))
+                .ToArray();
+
+            usersQuery = usersQuery.Where(x =>
+                EF.Functions.Like(x.Email, pattern) ||
+                (x.Nickname != null && EF.Functions.Like(x.Nickname, pattern)) ||
+                (x.NormalizedNickname != null && EF.Functions.Like(x.NormalizedNickname, pattern)) ||
+                (x.DisplayName != null && EF.Functions.Like(x.DisplayName, pattern)) ||
+                EF.Functions.Like(x.AuthProvider, pattern) ||
+                (matchingRoles.Length > 0 && matchingRoles.Contains(x.Role)));
+        }
+
+        if (query.Role is not null)
+            usersQuery = usersQuery.Where(x => x.Role == query.Role.Value);
+
+        var provider = NormalizeProvider(query.Provider);
+        if (provider is not null)
+            usersQuery = usersQuery.Where(x => x.AuthProvider == provider);
+
+        var status = query.Status?.Trim().ToLowerInvariant();
+        usersQuery = status switch
+        {
+            "active" => usersQuery.Where(x => !x.IsDeleted),
+            "deleted" => usersQuery.Where(x => x.IsDeleted),
+            "blocked" => usersQuery.Where(_ => false),
+            _ => usersQuery
+        };
+
+        if (query.CreatedFrom is not null)
+            usersQuery = usersQuery.Where(x => x.CreatedAt >= query.CreatedFrom.Value.Date);
+
+        if (query.CreatedTo is not null)
+        {
+            var createdToExclusive = query.CreatedTo.Value.Date.AddDays(1);
+            usersQuery = usersQuery.Where(x => x.CreatedAt < createdToExclusive);
+        }
+
+        var total = await usersQuery.CountAsync(cancellationToken);
+        var users = await usersQuery
             .OrderByDescending(x => x.CreatedAt)
+            .ThenByDescending(x => x.Id)
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
             .ToListAsync(cancellationToken);
 
-        return users.Select(ToDto).ToList();
+        return new PagedResult<UserAdminDto>(users.Select(ToDto).ToList(), page, pageSize, total);
     }
 
     public async Task<UserAdminDto?> UpdateRoleAsync(int userId, UserRole role, CancellationToken cancellationToken = default)
@@ -1232,8 +1953,24 @@ public sealed class UserAdminService(IUnitOfWork unitOfWork) : IUserAdminService
         return true;
     }
 
-    private static UserAdminDto ToDto(User user) =>
-        new(
+    private static string? NormalizeProvider(string? provider)
+    {
+        if (string.IsNullOrWhiteSpace(provider))
+            return null;
+
+        return provider.Trim().ToLowerInvariant() switch
+        {
+            "local" => "Local",
+            "google" => "Google",
+            "deleted" => "Deleted",
+            var value => value
+        };
+    }
+
+    private static UserAdminDto ToDto(User user)
+    {
+        var status = user.IsDeleted ? "deleted" : "active";
+        return new(
             user.Id,
             user.Email,
             user.Role.ToString(),
@@ -1241,7 +1978,12 @@ public sealed class UserAdminService(IUnitOfWork unitOfWork) : IUserAdminService
             user.CreatedAt,
             user.LastLoginAt,
             string.IsNullOrWhiteSpace(user.DisplayName) ? user.Email : user.DisplayName,
-            string.IsNullOrWhiteSpace(user.Nickname) ? user.Email.Split('@')[0] : user.Nickname);
+            string.IsNullOrWhiteSpace(user.Nickname) ? user.Email.Split('@')[0] : user.Nickname,
+            user.AuthProvider,
+            user.IsDeleted,
+            user.DeletedAt,
+            status);
+    }
 }
 
 public sealed class DataSourceService(IUnitOfWork unitOfWork) : IDataSourceService

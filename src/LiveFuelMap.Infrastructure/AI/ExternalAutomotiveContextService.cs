@@ -52,6 +52,37 @@ public sealed class ExternalAutomotiveContextService(
         ["чернигова"] = "Чернігів"
     };
 
+    private static readonly Dictionary<string, string> UtfCityAliases = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["харків"] = "Харків",
+        ["харкова"] = "Харків",
+        ["харьков"] = "Харків",
+        ["харькова"] = "Харків",
+        ["львів"] = "Львів",
+        ["львова"] = "Львів",
+        ["львов"] = "Львів",
+        ["київ"] = "Київ",
+        ["києва"] = "Київ",
+        ["киев"] = "Київ",
+        ["киева"] = "Київ",
+        ["одеса"] = "Одеса",
+        ["одеси"] = "Одеса",
+        ["одесса"] = "Одеса",
+        ["одессы"] = "Одеса",
+        ["дніпро"] = "Дніпро",
+        ["дніпра"] = "Дніпро",
+        ["днепр"] = "Дніпро",
+        ["днепра"] = "Дніпро",
+        ["полтава"] = "Полтава",
+        ["полтави"] = "Полтава",
+        ["суми"] = "Суми",
+        ["сум"] = "Суми",
+        ["чернігів"] = "Чернігів",
+        ["чернігова"] = "Чернігів",
+        ["чернигов"] = "Чернігів",
+        ["чернигова"] = "Чернігів"
+    };
+
     private readonly ExternalContextOptions _options = options.Value;
 
     public async Task<string> BuildContextAsync(ChatRequest request, ChatTopicDecision topic, CancellationToken cancellationToken = default)
@@ -80,6 +111,44 @@ public sealed class ExternalAutomotiveContextService(
                 - Не називай зовнішні дані як перевірений факт; дай загальну пораду і вкажи, що інформацію потрібно перевірити вручну.
                 """;
         }
+    }
+
+    public async Task<string?> BuildDirectAnswerAsync(ChatRequest request, ChatTopicDecision topic, CancellationToken cancellationToken = default)
+    {
+        if (!_options.Enabled || topic.Intent != "route-distance")
+            return null;
+
+        try
+        {
+            httpClient.Timeout = TimeSpan.FromSeconds(Math.Clamp(_options.TimeoutSeconds, 3, 60));
+            return await BuildRouteDirectAnswerAsync(request.Message, cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogWarning(ex, "External route direct answer lookup failed.");
+            return "Не вдалося зараз перевірити маршрут через зовнішні джерела. Це не дані з бази LiveFuelMap; перевірте відстань у картах або спробуйте ще раз пізніше.";
+        }
+    }
+
+    private async Task<string?> BuildRouteDirectAnswerAsync(string message, CancellationToken cancellationToken)
+    {
+        if (!TryExtractRoute(message, out var from, out var to))
+            return "Не вдалося однозначно визначити маршрут. Напишіть, наприклад: \"від Харкова до Львова\". Це не дані з бази LiveFuelMap; відстань потрібно перевіряти за актуальними картами.";
+
+        var fromPoint = await GeocodeAsync(from, cancellationToken);
+        var toPoint = await GeocodeAsync(to, cancellationToken);
+        if (fromPoint is null || toPoint is null)
+            return $"Не вдалося знайти координати для маршруту {from} -> {to}. Це не дані з бази LiveFuelMap; уточніть назви населених пунктів і перевірте маршрут у картах.";
+
+        var route = await FetchOsrmRouteAsync(fromPoint.Value, toPoint.Value, cancellationToken);
+        if (route is null)
+            return $"OSRM зараз не повернув автомобільний маршрут {from} -> {to}. Це не дані з бази LiveFuelMap; перевірте актуальну відстань у Google Maps, OpenStreetMap або іншій навігації.";
+
+        var checkedAt = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm 'UTC'", InvariantCulture);
+        var distance = route.Value.DistanceKm.ToString("0.#", InvariantCulture);
+        var duration = FormatDurationForAnswer(route.Value.DurationSeconds);
+
+        return $"Орієнтовна автомобільна відстань від {from} до {to} — {distance} км. Орієнтовний час у дорозі без заторів і зупинок — {duration}. Джерела: OpenStreetMap Nominatim та OSRM public route API, перевірено {checkedAt}. Це не дані з бази LiveFuelMap; фактичний маршрут, час і доступність доріг потрібно перевіряти в актуальній навігації.";
     }
 
     private async Task<string> BuildRouteContextAsync(string message, CancellationToken cancellationToken)
@@ -456,6 +525,18 @@ public sealed class ExternalAutomotiveContextService(
         to = string.Empty;
 
         var normalized = Regex.Replace(message.Trim(), @"\s+", " ");
+        var utfMatch = Regex.Match(
+            normalized,
+            @"(?:від|от|from|із|из|з)\s+(?<from>[\p{L}'’\-\s]+?)\s+(?:до|to|в|у)\s+(?<to>[\p{L}'’\-\s]+?)(?:[?.!,]|$)",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+        if (utfMatch.Success)
+        {
+            from = NormalizeCityName(utfMatch.Groups["from"].Value);
+            to = NormalizeCityName(utfMatch.Groups["to"].Value);
+            return !string.IsNullOrWhiteSpace(from) && !string.IsNullOrWhiteSpace(to);
+        }
+
         var match = Regex.Match(
             normalized,
             @"(?:від|из|з)\s+(?<from>[\p{L}'’\-\s]+?)\s+(?:до|в|у)\s+(?<to>[\p{L}'’\-\s]+?)(?:[?.!,]|$)",
@@ -466,6 +547,20 @@ public sealed class ExternalAutomotiveContextService(
             from = NormalizeCityName(match.Groups["from"].Value);
             to = NormalizeCityName(match.Groups["to"].Value);
             return !string.IsNullOrWhiteSpace(from) && !string.IsNullOrWhiteSpace(to);
+        }
+
+        var utfFound = UtfCityAliases
+            .Where(alias => Regex.IsMatch(normalized, $@"(^|\s){Regex.Escape(alias.Key)}(\s|[?.!,]|$)", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+            .Select(alias => alias.Value)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(2)
+            .ToList();
+
+        if (utfFound.Count >= 2)
+        {
+            from = utfFound[0];
+            to = utfFound[1];
+            return true;
         }
 
         var found = CityAliases
@@ -487,6 +582,9 @@ public sealed class ExternalAutomotiveContextService(
     {
         var compact = Regex.Replace(value.Trim().ToLowerInvariant(), @"[^\p{L}\s'-]", string.Empty);
         compact = Regex.Replace(compact, @"\s+", " ");
+        if (UtfCityAliases.TryGetValue(compact, out var utfCanonical))
+            return utfCanonical;
+
         return CityAliases.TryGetValue(compact, out var canonical)
             ? canonical
             : CultureInfo.GetCultureInfo("uk-UA").TextInfo.ToTitleCase(compact);
@@ -610,6 +708,14 @@ public sealed class ExternalAutomotiveContextService(
             return $"{(int)duration.TotalHours} год {duration.Minutes} хв";
 
         return $"{duration.Minutes} хв";
+    }
+
+    private static string FormatDurationForAnswer(double seconds)
+    {
+        var duration = TimeSpan.FromSeconds(seconds);
+        return duration.TotalHours >= 1
+            ? $"{(int)duration.TotalHours} год {duration.Minutes} хв"
+            : $"{duration.Minutes} хв";
     }
 
     private HttpRequestMessage BuildGetRequest(string url)

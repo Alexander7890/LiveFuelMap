@@ -37,7 +37,7 @@ function Get-PortOwners {
 
 if (-not (Test-Path (Join-Path $root ".env"))) {
     Copy-Item -Path (Join-Path $root ".env.example") -Destination (Join-Path $root ".env")
-    Write-Host "Created .env from .env.example. Edit DB_PASSWORD/JWT_SECRET if needed, then run this script again." -ForegroundColor Yellow
+    Write-Host "Created .env from .env.example. Edit DB_PASSWORD/Jwt__Secret if needed, then run this script again." -ForegroundColor Yellow
     exit 1
 }
 

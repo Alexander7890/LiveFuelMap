@@ -3,10 +3,12 @@ import { api } from "../services/api";
 import { createFuelHubConnection } from "../services/signalr";
 import { useToast } from "./ToastContext";
 import { formatPrice } from "../utils/format";
+import { useTranslation } from "react-i18next";
 
 const DataContext = createContext(null);
 
 export function DataProvider({ children }) {
+  const { t } = useTranslation();
   const { showToast } = useToast();
   const [fuels, setFuels] = useState([]);
   const [stations, setStations] = useState([]);
@@ -57,15 +59,20 @@ export function DataProvider({ children }) {
 
     connection.on("fuelDataUpdate", payload => {
       applyFuelPayload(payload);
-      showToast("Дані оновлено", "Ціни та АЗС синхронізовано в реальному часі.", "info");
+      console.debug("Fuel data updated from realtime channel.");
     });
 
     connection.on("priceChanged", change => {
-      const direction = change.changeType === "decrease" ? "знизилась" : "підвищилась";
-      const oldPrice = change.oldPrice == null ? "—" : `${formatPrice(change.oldPrice)} грн`;
+      const direction = change.changeType === "decrease" ? t("realtime.decreased") : t("realtime.increased");
+      const oldPrice = change.oldPrice == null ? "—" : `${formatPrice(change.oldPrice)} ${t("common.currencyShort")}`;
       showToast(
-        `Ціна ${direction}`,
-        `${change.stationName}: ${change.fuelName} ${oldPrice} → ${formatPrice(change.newPrice)} грн`,
+        t("realtime.priceChangedTitle", { direction }),
+        t("realtime.priceChangedMessage", {
+          station: change.stationName,
+          fuel: change.fuelName,
+          oldPrice,
+          newPrice: `${formatPrice(change.newPrice)} ${t("common.currencyShort")}`
+        }),
         change.changeType === "decrease" ? "success" : "warning"
       );
     });
@@ -109,14 +116,14 @@ export function DataProvider({ children }) {
       connection.stop();
       hubRef.current = null;
     };
-  }, [applyFuelPayload, showToast]);
+  }, [applyFuelPayload, showToast, t]);
 
   const sendComment = useCallback(async request => {
     if (hubRef.current?.state === "Connected") {
       return hubRef.current.invoke("SendComment", request);
     }
-    throw new Error("WebSocket тимчасово недоступний.");
-  }, []);
+    throw new Error(t("comments.sendUnavailable"));
+  }, [t]);
 
   const updateOwnComment = useCallback(async (id, request) => {
     if (hubRef.current?.state === "Connected") {
@@ -157,4 +164,3 @@ export function useData() {
   if (!context) throw new Error("useData must be used inside DataProvider");
   return context;
 }
-

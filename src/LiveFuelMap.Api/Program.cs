@@ -5,6 +5,7 @@ using System.IdentityModel.Tokens.Jwt;
 using LiveFuelMap.Api.Authentication;
 using LiveFuelMap.Api.Hubs;
 using LiveFuelMap.Api.Middleware;
+using LiveFuelMap.Api.Security;
 using LiveFuelMap.BLL;
 using LiveFuelMap.BLL.DTOs;
 using LiveFuelMap.BLL.Interfaces;
@@ -31,14 +32,42 @@ foreach (var (key, value) in dotEnv)
         dotEnvConfiguration[key.Replace("__", ":")] = value;
 }
 if (dotEnv.TryGetValue("PORT", out var port))
+{
     dotEnvConfiguration["Frontend:ApiBaseUrl"] = $"http://localhost:{port}";
+
+    if (int.TryParse(port, out var portNumber) &&
+        portNumber > 0 &&
+        string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("ASPNETCORE_URLS")) &&
+        string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("DOTNET_URLS")))
+    {
+        builder.WebHost.UseUrls($"http://localhost:{portNumber}");
+    }
+}
 var dotEnvMappings = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
 {
     ["JWT_SECRET"] = "Jwt:Secret",
+    ["GOOGLE_CLIENT_ID"] = "GoogleAuth:ClientId",
+    ["GOOGLE_CLIENT_SECRET"] = "GoogleAuth:ClientSecret",
+    ["GOOGLE_REDIRECT_URI"] = "GoogleAuth:RedirectUri",
+    ["GOOGLE_FRONTEND_CALLBACK_URL"] = "GoogleAuth:FrontendCallbackUrl",
+    ["CAPTCHA_ENABLED"] = "Captcha:Enabled",
+    ["CAPTCHA_PROVIDER"] = "Captcha:Provider",
+    ["CAPTCHA_SITE_KEY"] = "Captcha:SiteKey",
+    ["CAPTCHA_SECRET_KEY"] = "Captcha:SecretKey",
+    ["CAPTCHA_VERIFY_ENDPOINT"] = "Captcha:VerifyEndpoint",
+    ["AUTH_RATE_LIMIT_ENABLED"] = "AuthRateLimit:Enabled",
+    ["AUTH_RATE_LIMIT_LOGIN_ATTEMPTS"] = "AuthRateLimit:LoginAttemptLimit",
+    ["AUTH_RATE_LIMIT_REGISTER_ATTEMPTS"] = "AuthRateLimit:RegisterAttemptLimit",
+    ["AUTH_RATE_LIMIT_WINDOW_SECONDS"] = "AuthRateLimit:WindowSeconds",
     ["AI_PROVIDER"] = "Ai:Provider",
     ["AI_MODEL"] = "Ai:Model",
     ["AI_ENDPOINT"] = "Ai:Endpoint",
     ["AI_TIMEOUT"] = "Ai:TimeoutSeconds",
+    ["AI_TEMPERATURE"] = "Ai:Temperature",
+    ["AI_MAX_TOKENS"] = "Ai:MaxTokens",
+    ["GROQ_API_KEY"] = "Ai:ApiKey",
+    ["GROQ_MODEL"] = "Ai:Model",
+    ["GROQ_BASE_URL"] = "Ai:Endpoint",
     ["CHAT_RATE_LIMIT"] = "Chat:RateLimitPerMinute",
     ["CHAT_MAX_MESSAGE_LENGTH"] = "Chat:MaxMessageLength",
     ["API_RATE_LIMIT_ENABLED"] = "ApiSecurity:RateLimit:Enabled",
@@ -64,9 +93,17 @@ foreach (var (envKey, configurationKey) in dotEnvMappings)
 {
     if (dotEnv.TryGetValue(envKey, out var value))
         dotEnvConfiguration[configurationKey] = value;
+
+    var environmentValue = Environment.GetEnvironmentVariable(envKey);
+    if (!string.IsNullOrWhiteSpace(environmentValue))
+        dotEnvConfiguration[configurationKey] = environmentValue;
 }
 if (builder.Environment.IsEnvironment("Testing"))
+{
     dotEnvConfiguration["ApiSecurity:RateLimit:Enabled"] = "false";
+    dotEnvConfiguration["Captcha:Enabled"] = "false";
+    dotEnvConfiguration["AuthRateLimit:Enabled"] = "false";
+}
 if (dotEnvConfiguration.Count > 0)
     builder.Configuration.AddInMemoryCollection(dotEnvConfiguration);
 
@@ -95,6 +132,8 @@ builder.Services.AddDbContext<LiveFuelMapDbContext>(options =>
 builder.Services.AddBusinessLogic();
 builder.Services.AddInfrastructure(builder.Configuration);
 builder.Services.AddLiveFuelMapApiSecurity(builder.Configuration);
+builder.Services.Configure<AuthRateLimitOptions>(builder.Configuration.GetSection("AuthRateLimit"));
+builder.Services.AddSingleton<IAuthAttemptRateLimiter, InMemoryAuthAttemptRateLimiter>();
 builder.Services.AddSingleton<IApiMetrics, InMemoryApiMetrics>();
 builder.Services.AddSingleton<LivePresenceTracker>();
 builder.Services.AddScoped<IFuelUpdatesNotifier, SignalRFuelUpdatesNotifier>();
@@ -207,10 +246,10 @@ builder.Services.AddAuthentication(options =>
                 var user = await db.Users
                     .AsNoTracking()
                     .Where(x => x.Id == userId)
-                    .Select(x => new { x.TokenVersion, x.Role })
+                    .Select(x => new { x.TokenVersion, x.Role, x.IsDeleted })
                     .FirstOrDefaultAsync(context.HttpContext.RequestAborted);
 
-                if (user is null || user.TokenVersion != tokenVersion)
+                if (user is null || user.IsDeleted || user.TokenVersion != tokenVersion)
                 {
                     context.Fail("JWT has been revoked.");
                     return;
@@ -284,6 +323,13 @@ if (Directory.Exists(frontendPath))
     app.MapFallback(async context =>
     {
         if (!HttpMethods.IsGet(context.Request.Method))
+        {
+            context.Response.StatusCode = StatusCodes.Status404NotFound;
+            return;
+        }
+
+        if (context.Request.Path.StartsWithSegments("/api", StringComparison.OrdinalIgnoreCase) ||
+            context.Request.Path.StartsWithSegments("/hubs", StringComparison.OrdinalIgnoreCase))
         {
             context.Response.StatusCode = StatusCodes.Status404NotFound;
             return;

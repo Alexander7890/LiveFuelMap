@@ -11,9 +11,9 @@ namespace LiveFuelMap.Api.Controllers;
 public sealed class AdminCommentsController(ICommentService commentService) : ControllerBase
 {
     [HttpGet]
-    public async Task<IActionResult> List([FromQuery] int? stationId, [FromQuery] string? search, [FromQuery] int take = 200, CancellationToken cancellationToken = default)
+    public async Task<IActionResult> List([FromQuery] CommentAdminQuery query, CancellationToken cancellationToken = default)
     {
-        return Ok(await commentService.ListAsync(stationId, search, take, cancellationToken));
+        return Ok(await commentService.ListAdminAsync(query, cancellationToken));
     }
 
     [HttpPut("{id:int}")]

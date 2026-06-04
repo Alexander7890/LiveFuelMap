@@ -1,5 +1,6 @@
 import { ChevronLeft, ChevronRight, Search } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import StationCard from "./StationCard";
 import { Button, Select } from "../common/Ui";
 import { useData } from "../../contexts/DataContext";
@@ -25,6 +26,7 @@ function benchmarkPrice(station, fuelFilter) {
 }
 
 export default function StationCarousel({ activeFuel, setActiveFuel, onShowComments }) {
+  const { t } = useTranslation();
   const { stations, fuels, comments } = useData();
   const [query, setQuery] = useState("");
   const [ratingFilter, setRatingFilter] = useState("all");
@@ -177,41 +179,41 @@ export default function StationCarousel({ activeFuel, setActiveFuel, onShowComme
   }
 
   return (
-    <div className="panel premium-card p-4" onMouseEnter={handleRailEnter} onMouseLeave={handleRailLeave}>
-      <Stagger className="grid gap-3 lg:grid-cols-[1fr_180px_180px_180px]">
+    <div className="panel premium-card p-3 sm:p-4" onMouseEnter={handleRailEnter} onMouseLeave={handleRailLeave}>
+      <Stagger className="grid gap-3 sm:grid-cols-2 lg:grid-cols-[1fr_180px_180px_180px]">
         <StaggerItem as="label" className="relative">
           <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
-          <input className="field pl-9" value={query} onChange={event => setQuery(event.target.value)} placeholder="Пошук за назвою, адресою, містом" />
+          <input className="field pl-9" value={query} onChange={event => setQuery(event.target.value)} placeholder={t("stations.searchPlaceholder")} />
         </StaggerItem>
         <StaggerItem>
           <Select value={activeFuel} onChange={event => setActiveFuel(event.target.value)}>
-            <option value="all">Усі типи пального</option>
+            <option value="all">{t("stations.allFuel")}</option>
             {fuels.map(fuel => <option key={fuel.code} value={fuel.code}>{fuel.name}</option>)}
           </Select>
         </StaggerItem>
         <StaggerItem>
           <Select value={ratingFilter} onChange={event => setRatingFilter(event.target.value)}>
-            <option value="all">Будь-який рейтинг</option>
-            <option value="rated">З рейтингом</option>
-            <option value="unrated">Без рейтингу</option>
-            <option value="4plus">4+ зірки</option>
-            <option value="below3">Нижче 3</option>
+            <option value="all">{t("stations.anyRating")}</option>
+            <option value="rated">{t("stations.withRating")}</option>
+            <option value="unrated">{t("stations.withoutRating")}</option>
+            <option value="4plus">{t("stations.rating4Plus")}</option>
+            <option value="below3">{t("stations.ratingBelow3")}</option>
           </Select>
         </StaggerItem>
         <StaggerItem>
           <Select value={sort} onChange={event => setSort(event.target.value)}>
-            <option value="name">За назвою</option>
-            <option value="price-asc">Від дешевих</option>
-            <option value="price-desc">Від дорогих</option>
-            <option value="rating-desc">За рейтингом</option>
+            <option value="name">{t("stations.sortName")}</option>
+            <option value="price-asc">{t("stations.sortCheap")}</option>
+            <option value="price-desc">{t("stations.sortExpensive")}</option>
+            <option value="rating-desc">{t("stations.sortRating")}</option>
           </Select>
         </StaggerItem>
       </Stagger>
-      <div className="mt-4 flex items-center justify-between gap-3">
-        <div className="text-sm font-medium text-slate-600 dark:text-slate-300">Знайдено: {filtered.length}</div>
-        <div className="flex gap-2">
-          <Button variant="secondary" onClick={() => scrollByCards(-3)}><ChevronLeft className="h-4 w-4" /></Button>
-          <Button variant="secondary" onClick={() => scrollByCards(3)}><ChevronRight className="h-4 w-4" /></Button>
+      <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="text-sm font-medium text-slate-600 dark:text-slate-300">{t("common.found")}: {filtered.length}</div>
+        <div className="grid grid-cols-2 gap-2 sm:flex">
+          <Button variant="secondary" onClick={() => scrollByCards(-3)} aria-label={t("stations.scrollLeft")}><ChevronLeft className="h-4 w-4" /></Button>
+          <Button variant="secondary" onClick={() => scrollByCards(3)} aria-label={t("stations.scrollRight")}><ChevronRight className="h-4 w-4" /></Button>
         </div>
       </div>
       <div

@@ -22,11 +22,11 @@ public sealed class ChatController(IChatService chatService) : ControllerBase
         }
         catch (ChatRateLimitExceededException)
         {
-            return StatusCode(StatusCodes.Status429TooManyRequests, new { error = "Too many chat messages. Try again later." });
+            return StatusCode(StatusCodes.Status429TooManyRequests, new { answer = ChatService.AiUnavailableMessage, error = ChatService.AiUnavailableMessage, status = "failed" });
         }
         catch (AiChatUnavailableException)
         {
-            return StatusCode(StatusCodes.Status503ServiceUnavailable, new { answer = "AI сервіс тимчасово недоступний.", status = "failed" });
+            return StatusCode(StatusCodes.Status503ServiceUnavailable, new { answer = ChatService.AiUnavailableMessage, error = ChatService.AiUnavailableMessage, status = "failed" });
         }
         catch (InvalidOperationException ex)
         {

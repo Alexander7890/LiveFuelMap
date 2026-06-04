@@ -1,6 +1,7 @@
 import { motion } from "framer-motion";
 import { ExternalLink, MessageCircle, RotateCcw } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import Stars from "../common/Stars";
 import { Button } from "../common/Ui";
 import { formatPrice, imageUrl, truncate } from "../../utils/format";
@@ -24,6 +25,7 @@ function backPhotos(station) {
 }
 
 export default function StationCard({ station, fuelFilter, latestComment, onShowComments }) {
+  const { t } = useTranslation();
   const [flipped, setFlipped] = useState(false);
   const [photoIndex, setPhotoIndex] = useState(0);
   const prices = orderedPrices(station, fuelFilter);
@@ -113,8 +115,8 @@ export default function StationCard({ station, fuelFilter, latestComment, onShow
         }
       }}
       tabIndex={0}
-      className="station-card group relative h-[540px] min-w-[min(330px,calc(100vw-58px))] cursor-pointer select-none overflow-visible transform-gpu [contain:layout] [perspective:1700px]"
-      title="Подвійний клік перевертає картку"
+      className="station-card group relative h-[540px] min-w-[min(330px,calc(100vw-32px))] cursor-pointer select-none overflow-visible transform-gpu [contain:layout] [perspective:1700px] sm:min-w-[330px]"
+      title={t("stations.flipHint")}
     >
       <motion.div
         className="card-flip-stage relative h-full transform-gpu"
@@ -135,31 +137,31 @@ export default function StationCard({ station, fuelFilter, latestComment, onShow
           </div>
           <div className="flex flex-1 flex-col p-4">
             <div className="flex items-start justify-between gap-3">
-              <div>
-                <h3 className="text-lg font-black">{station.name}</h3>
-                <p className="mt-1 text-sm text-slate-500">{station.address || station.city}</p>
+              <div className="min-w-0">
+                <h3 className="truncate text-lg font-black">{station.name}</h3>
+                <p className="mt-1 line-clamp-2 text-sm text-slate-500">{station.address || station.city}</p>
               </div>
-              <span className="badge-soft">{station.city}</span>
+              <span className="badge-soft max-w-[42%] shrink-0 truncate">{station.city}</span>
             </div>
             <div className="station-card-prices mt-4 grid content-start gap-2">
-              {prices.length === 0 && <div className="rounded-xl bg-slate-50 p-3 text-sm text-slate-500 dark:bg-slate-900">Ціни відсутні</div>}
+              {prices.length === 0 && <div className="rounded-xl bg-slate-50 p-3 text-sm text-slate-500 dark:bg-slate-900">{t("stations.pricesUnavailable")}</div>}
               {visiblePrices.map(price => (
                 <div
                   key={`${price.fuelId}-${price.date}`}
-                  className="station-price-row flex items-center justify-between rounded-xl bg-slate-50/90 px-3 py-2 text-sm dark:bg-slate-900/90"
+                  className="station-price-row flex items-center justify-between gap-2 rounded-xl bg-slate-50/90 px-3 py-2 text-sm dark:bg-slate-900/90"
                 >
-                  <span className="font-semibold">{price.fuelName}</span>
-                  <strong>{formatPrice(price.price)} грн</strong>
+                  <span className="min-w-0 truncate font-semibold">{price.fuelName}</span>
+                  <strong className="shrink-0">{formatPrice(price.price)} {t("common.currencyShort")}</strong>
                 </div>
               ))}
-              {hiddenPriceCount > 0 && <div className="rounded-xl bg-slate-100/80 px-3 py-2 text-xs font-semibold text-slate-500 dark:bg-slate-900/80">Ще {hiddenPriceCount} позицій на звороті</div>}
+              {hiddenPriceCount > 0 && <div className="rounded-xl bg-slate-100/80 px-3 py-2 text-xs font-semibold text-slate-500 dark:bg-slate-900/80">{t("stations.morePrices", { count: hiddenPriceCount })}</div>}
             </div>
             <div className="mt-auto flex items-center justify-between border-t border-slate-200 pt-3 dark:border-slate-800">
               <div className="flex items-center gap-2 text-amber-400">
                 <Stars rating={hasRating ? Math.round(rating) : 0} />
                 <span className="text-sm font-semibold text-slate-600 dark:text-slate-300">{hasRating ? rating.toFixed(1) : "—"}</span>
               </div>
-              <span className="text-xs text-slate-500">{station.reviewCount || 0} відгуків</span>
+              <span className="text-xs text-slate-500">{t("stations.reviewCount", { count: station.reviewCount || 0 })}</span>
             </div>
           </div>
         </div>
@@ -171,22 +173,22 @@ export default function StationCard({ station, fuelFilter, latestComment, onShow
               <RotateCcw className="h-5 w-5 text-brand-600" />
             </div>
             <p className="mt-2 text-sm leading-6 text-slate-600 dark:text-slate-300">
-              {station.city}, {station.address || "адреса не вказана"}. Координати: {Number(station.latitude || 0).toFixed(5)}, {Number(station.longitude || 0).toFixed(5)}.
+              {station.city}, {station.address || t("stations.noAddress")}. {t("stations.coordinates")}: {Number(station.latitude || 0).toFixed(5)}, {Number(station.longitude || 0).toFixed(5)}.
             </p>
           </div>
           <div className="grid grid-cols-2 gap-2 text-sm">
-            <div className="soft-panel p-3"><span className="block text-slate-500">Типів пального</span><strong>{prices.length || "—"}</strong></div>
-            <div className="soft-panel p-3"><span className="block text-slate-500">Фото</span><strong>{photos[0] === "/default-station11.jpg" ? "—" : photos.length}</strong></div>
+            <div className="soft-panel p-3"><span className="block text-slate-500">{t("common.fuelTypes")}</span><strong>{prices.length || "—"}</strong></div>
+            <div className="soft-panel p-3"><span className="block text-slate-500">{t("stations.photo")}</span><strong>{photos[0] === "/default-station11.jpg" ? "—" : photos.length}</strong></div>
           </div>
           <div className="soft-panel p-3">
             <div className="mb-1 flex items-center justify-between">
-              <span className="text-xs font-semibold uppercase text-slate-500">Останній відгук</span>
+              <span className="text-xs font-semibold uppercase text-slate-500">{t("stations.latestReview")}</span>
               <MessageCircle className="h-4 w-4 text-brand-600" />
             </div>
             {latestComment ? (
               <p className="text-sm leading-6">{truncate(latestComment.content, 125)}</p>
             ) : (
-              <p className="text-sm text-slate-500">Відгуків поки немає.</p>
+              <p className="text-sm text-slate-500">{t("comments.empty")}</p>
             )}
           </div>
           <div className="relative min-h-32 overflow-hidden rounded-2xl border border-slate-200 bg-slate-100 dark:border-slate-800 dark:bg-slate-900">
@@ -196,18 +198,18 @@ export default function StationCard({ station, fuelFilter, latestComment, onShow
               animate={{ opacity: 1, scale: 1 }}
               transition={{ duration: 0.8, ease: premiumEase }}
               src={imageUrl(photos[photoIndex])}
-              alt={`${station.name} фото ${photoIndex + 1}`}
+              alt={`${station.name} ${t("stations.photo")} ${photoIndex + 1}`}
               className="h-32 w-full object-cover"
               onError={event => { event.currentTarget.src = "/default-station11.jpg"; }}
             />
             {photos.length > 1 && <span className="absolute bottom-2 right-2 rounded-full bg-slate-950/70 px-2 py-1 text-xs font-semibold text-white">{photoIndex + 1}/{photos.length}</span>}
           </div>
           <div className="mt-auto grid grid-cols-2 gap-2">
-            <Button variant="secondary" onClick={() => onShowComments(station.id)}>Відгуки</Button>
+            <Button variant="secondary" className="px-2 text-xs sm:text-sm" onClick={() => onShowComments(station.id)}>{t("stations.reviews")}</Button>
             {station.websiteUrl ? (
-              <a className="btn-primary" href={station.websiteUrl} target="_blank" rel="noreferrer"><ExternalLink className="h-4 w-4" /> Сайт</a>
+              <a className="btn-primary px-2 text-xs sm:text-sm" href={station.websiteUrl} target="_blank" rel="noreferrer"><ExternalLink className="h-4 w-4" /> {t("stations.website")}</a>
             ) : (
-              <Button variant="secondary" disabled>Сайт</Button>
+              <Button variant="secondary" className="px-2 text-xs sm:text-sm" disabled>{t("stations.website")}</Button>
             )}
           </div>
         </div>

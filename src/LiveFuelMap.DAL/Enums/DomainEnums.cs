@@ -9,8 +9,9 @@ public enum UserRole
 
 public enum SubscriptionFrequency
 {
-    Daily = 0,
-    Weekly = 1
+    Immediate = 0,
+    Daily = 1,
+    Weekly = 2
 }
 
 public enum DataSourceType

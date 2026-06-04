@@ -30,12 +30,43 @@ public sealed class FrontendOptions
     public string GoogleMapsApiKey { get; set; } = string.Empty;
 }
 
+public sealed class GoogleAuthOptions
+{
+    public string ClientId { get; set; } = string.Empty;
+    public string ClientSecret { get; set; } = string.Empty;
+    public string RedirectUri { get; set; } = "http://localhost:5000/api/auth/google/callback";
+    public string FrontendCallbackUrl { get; set; } = "http://localhost:5173/auth/google/callback";
+    public string AuthorizationEndpoint { get; set; } = "https://accounts.google.com/o/oauth2/v2/auth";
+    public string TokenEndpoint { get; set; } = "https://oauth2.googleapis.com/token";
+    public int StateLifetimeMinutes { get; set; } = 10;
+}
+
+public sealed class CaptchaOptions
+{
+    public bool Enabled { get; set; } = false;
+    public string Provider { get; set; } = "RecaptchaV2";
+    public string SiteKey { get; set; } = string.Empty;
+    public string SecretKey { get; set; } = string.Empty;
+    public string VerifyEndpoint { get; set; } = "https://www.google.com/recaptcha/api/siteverify";
+}
+
+public sealed class AuthRateLimitOptions
+{
+    public bool Enabled { get; set; } = true;
+    public int LoginAttemptLimit { get; set; } = 8;
+    public int RegisterAttemptLimit { get; set; } = 5;
+    public int WindowSeconds { get; set; } = 300;
+}
+
 public sealed class AiOptions
 {
-    public string Provider { get; set; } = "Ollama";
-    public string Model { get; set; } = "mistral";
-    public string Endpoint { get; set; } = "http://localhost:11434/api/generate";
-    public int TimeoutSeconds { get; set; } = 60;
+    public string Provider { get; set; } = "Groq";
+    public string Model { get; set; } = "llama-3.1-8b-instant";
+    public string Endpoint { get; set; } = "https://api.groq.com/openai/v1/chat/completions";
+    public string ApiKey { get; set; } = string.Empty;
+    public int TimeoutSeconds { get; set; } = 30;
+    public decimal Temperature { get; set; } = 0.4m;
+    public int MaxTokens { get; set; } = 400;
 }
 
 public sealed class ChatOptions

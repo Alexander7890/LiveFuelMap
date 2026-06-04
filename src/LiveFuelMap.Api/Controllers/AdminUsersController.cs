@@ -13,8 +13,8 @@ namespace LiveFuelMap.Api.Controllers;
 public sealed class AdminUsersController(IUserAdminService userAdminService) : ControllerBase
 {
     [HttpGet]
-    public async Task<IActionResult> List(CancellationToken cancellationToken) =>
-        Ok(await userAdminService.ListAsync(cancellationToken));
+    public async Task<IActionResult> List([FromQuery] UserAdminQuery query, CancellationToken cancellationToken) =>
+        Ok(await userAdminService.ListAsync(query, cancellationToken));
 
     [HttpPut("{id:int}/role")]
     public async Task<IActionResult> UpdateRole(int id, UpdateUserRoleRequest request, CancellationToken cancellationToken)

@@ -3,6 +3,26 @@ import { api, clearAuthStorage, getRefreshToken, persistAuth } from "../services
 
 const AuthContext = createContext(null);
 
+function userFromAuthResult(result) {
+  const userId = Number(result?.userId);
+  if (!Number.isFinite(userId) || !result?.email || !result?.role) return null;
+
+  const requiresNicknameSetup = Boolean(result.requiresNickname || result.requiresNicknameSetup);
+  const nickname = requiresNicknameSetup ? "" : (result.nickname || result.suggestedNickname || result.email.split("@")[0]);
+  return {
+    userId,
+    email: result.email,
+    role: result.role,
+    emailConfirmed: true,
+    displayName: nickname,
+    nickname,
+    profileImageUrl: "",
+    canSubscribeToEmail: true,
+    authProvider: result.authProvider || "Local",
+    requiresNicknameSetup
+  };
+}
+
 export function AuthProvider({ children }) {
   const [currentUser, setCurrentUser] = useState(null);
   const [profile, setProfile] = useState(null);
@@ -50,13 +70,28 @@ export function AuthProvider({ children }) {
     };
   }, [loadCurrentUser, loadProfile]);
 
-  const login = useCallback(async request => {
-    const result = await api.auth.login(request);
+  const completeAuth = useCallback(async (result, options = {}) => {
     persistAuth(result);
+    const provisionalUser = userFromAuthResult(result);
+    if (provisionalUser) {
+      setCurrentUser(provisionalUser);
+      setLoading(false);
+    }
+
+    if (options.verify === false) {
+      return provisionalUser;
+    }
+
     const user = await loadCurrentUser();
     await loadProfile();
-    return user;
+    setLoading(false);
+    return user ?? provisionalUser;
   }, [loadCurrentUser, loadProfile]);
+
+  const login = useCallback(async request => {
+    const result = await api.auth.login(request);
+    return completeAuth(result);
+  }, [completeAuth]);
 
   const register = useCallback(async request => {
     return api.auth.register(request);
@@ -87,10 +122,11 @@ export function AuthProvider({ children }) {
     isAdmin: currentUser?.role === "Admin",
     login,
     register,
+    completeAuth,
     logout,
     refreshProfile,
     setProfile
-  }), [currentUser, profile, loading, login, register, logout, refreshProfile]);
+  }), [currentUser, profile, loading, login, register, completeAuth, logout, refreshProfile]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
@@ -100,4 +136,3 @@ export function useAuth() {
   if (!context) throw new Error("useAuth must be used inside AuthProvider");
   return context;
 }
-

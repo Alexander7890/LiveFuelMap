@@ -1,0 +1,8 @@
+{
+  "appId": "com.livefuelmap.app",
+  "appName": "LiveFuelMap",
+  "webDir": "dist",
+  "server": {
+    "androidScheme": "https"
+  }
+}

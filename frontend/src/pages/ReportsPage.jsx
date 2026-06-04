@@ -1,5 +1,6 @@
 import { FileDown } from "lucide-react";
 import { useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Button, Card, Input, Section, Select } from "../components/common/Ui";
 import { useData } from "../contexts/DataContext";
 import { useToast } from "../contexts/ToastContext";
@@ -13,6 +14,7 @@ function dateInput(offsetDays) {
 }
 
 export default function ReportsPage() {
+  const { t } = useTranslation();
   const { stations, fuels } = useData();
   const { showToast } = useToast();
   const [loading, setLoading] = useState(false);
@@ -49,7 +51,7 @@ export default function ReportsPage() {
     event.preventDefault();
     if (loading) return;
     if (!form.fuelCodes.length) {
-      showToast("Пальне не вибрано", "Оберіть хоча б один тип пального.", "warning");
+      showToast(t("reports.fuelMissing"), t("reports.fuelMissingMessage"), "warning");
       return;
     }
     setLoading(true);
@@ -64,29 +66,29 @@ export default function ReportsPage() {
       };
       const { blob, fileName } = await api.report(request);
       downloadBlob(blob, fileName);
-      showToast("Звіт сформовано", fileName);
+      showToast(t("reports.created"), fileName);
     } catch (error) {
-      showToast("Помилка експорту", error.message, "danger");
+      showToast(t("reports.exportError"), error.message, "danger");
     } finally {
       setLoading(false);
     }
   }
 
   return (
-    <Section title="Звіт за цінами" subtitle="Backend на C# формує PDF або Excel з таблицями, графіками, діаграмами та автоматичним висновком.">
+    <Section title={t("reports.title")} subtitle={t("reports.subtitle")}>
       <Card as="form" onSubmit={submit} className="grid gap-6">
         <div className="grid gap-4 md:grid-cols-4">
-          <Input label="Місто" value={form.city} onChange={event => setForm({ ...form, city: event.target.value })} />
-          <Input type="date" label="Дата початку" value={form.from} onChange={event => setForm({ ...form, from: event.target.value })} required />
-          <Input type="date" label="Дата завершення" value={form.to} onChange={event => setForm({ ...form, to: event.target.value })} required />
-          <Select label="Формат" value={form.format} onChange={event => setForm({ ...form, format: event.target.value })}>
+          <Input label={t("common.city")} value={form.city} onChange={event => setForm({ ...form, city: event.target.value })} />
+          <Input type="date" label={t("reports.dateFrom")} value={form.from} onChange={event => setForm({ ...form, from: event.target.value })} required />
+          <Input type="date" label={t("reports.dateTo")} value={form.to} onChange={event => setForm({ ...form, to: event.target.value })} required />
+          <Select label={t("reports.format")} value={form.format} onChange={event => setForm({ ...form, format: event.target.value })}>
             <option value="pdf">PDF</option>
             <option value="excel">Excel</option>
           </Select>
         </div>
 
         <div>
-          <div className="mb-2 text-sm font-bold">Типи пального</div>
+          <div className="mb-2 text-sm font-bold">{t("common.fuelTypes")}</div>
           <div className="flex flex-wrap gap-2">
             {fuels.map(fuel => (
               <button
@@ -102,11 +104,11 @@ export default function ReportsPage() {
         </div>
 
         <div>
-          <div className="mb-2 flex items-center justify-between gap-3">
-            <div className="text-sm font-bold">АЗС</div>
-            <div className="flex gap-2">
-              <Button type="button" variant="secondary" onClick={() => setForm({ ...form, stationIds: stationOptions.map(item => item.id) })}>Обрати всі</Button>
-              <Button type="button" variant="ghost" onClick={() => setForm({ ...form, stationIds: [] })}>Очистити</Button>
+          <div className="mb-2 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="text-sm font-bold">{t("common.stations")}</div>
+            <div className="grid gap-2 sm:flex">
+              <Button type="button" variant="secondary" onClick={() => setForm({ ...form, stationIds: stationOptions.map(item => item.id) })}>{t("common.selectAll")}</Button>
+              <Button type="button" variant="ghost" onClick={() => setForm({ ...form, stationIds: [] })}>{t("common.clear")}</Button>
             </div>
           </div>
           <div className="max-h-72 overflow-y-auto rounded-2xl border border-slate-200 p-3 dark:border-slate-800">
@@ -121,7 +123,7 @@ export default function ReportsPage() {
           </div>
         </div>
 
-        <Button type="submit" loading={loading} className="w-fit"><FileDown className="h-4 w-4" /> Сформувати звіт</Button>
+        <Button type="submit" loading={loading} className="w-full sm:w-fit"><FileDown className="h-4 w-4" /> {t("reports.generate")}</Button>
       </Card>
     </Section>
   );

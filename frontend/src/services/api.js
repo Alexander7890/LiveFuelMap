@@ -1,4 +1,5 @@
 import { API_BASE_URL } from "../config";
+import { translateApiErrors, translateApiMessage } from "../i18n/apiMessages";
 import { createIdempotencyKey, filenameFromDisposition } from "../utils/format";
 
 export const tokenStorageKey = "token";
@@ -35,11 +36,48 @@ export function apiUrl(path) {
   return `${API_BASE_URL}${path}`;
 }
 
+export class ApiError extends Error {
+  constructor(message, { status = 0, errors = {}, suggestions = [], payload = null } = {}) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.errors = errors || {};
+    this.suggestions = suggestions || [];
+    this.payload = payload;
+  }
+}
+
 async function readResponse(response) {
   if (response.status === 204) return null;
   const contentType = response.headers.get("content-type") || "";
   if (contentType.includes("application/json")) return response.json();
   return response.text();
+}
+
+function normalizeApiMessage(payload, fallback) {
+  if (!payload) return fallback;
+  if (typeof payload === "string") return payload || fallback;
+  return payload.message || payload.error || fallback;
+}
+
+function normalizeApiErrors(payload) {
+  if (!payload || typeof payload !== "object" || !payload.errors) return {};
+  return Object.fromEntries(
+    Object.entries(payload.errors).map(([key, value]) => [
+      key,
+      Array.isArray(value) ? value.map(String) : [String(value)]
+    ])
+  );
+}
+
+function createApiError(response, payload, fallback) {
+  const errors = normalizeApiErrors(payload);
+  return new ApiError(translateApiMessage(normalizeApiMessage(payload, fallback), fallback), {
+    status: response.status,
+    errors: translateApiErrors(errors),
+    suggestions: payload?.suggestions || [],
+    payload
+  });
 }
 
 export async function refreshAccessToken() {
@@ -54,7 +92,7 @@ export async function refreshAccessToken() {
     })
       .then(async response => {
         const payload = await readResponse(response);
-        if (!response.ok) throw new Error(payload?.error || payload?.message || "Session expired.");
+        if (!response.ok) throw createApiError(response, payload, "sessionExpired");
         persistAuth(payload);
         return payload;
       })
@@ -73,7 +111,16 @@ export async function fetchJson(path, options = {}, allowRefresh = true) {
     ...(options.headers || {})
   };
 
-  const response = await fetch(apiUrl(path), { ...options, headers });
+  let response;
+  try {
+    response = await fetch(apiUrl(path), { ...options, headers });
+  } catch (error) {
+    throw new ApiError(translateApiMessage("networkError"), {
+      status: 0,
+      payload: error
+    });
+  }
+
   const payload = await readResponse(response);
 
   if (response.status === 401 && allowRefresh && getRefreshToken()) {
@@ -82,7 +129,7 @@ export async function fetchJson(path, options = {}, allowRefresh = true) {
   }
 
   if (!response.ok) {
-    throw new Error(payload?.error || payload?.message || payload || `HTTP ${response.status}`);
+    throw createApiError(response, payload, "genericActionFailed");
   }
 
   return payload;
@@ -106,7 +153,7 @@ export async function fetchFile(path, request, format) {
 
   if (!response.ok) {
     const payload = await readResponse(response);
-    throw new Error(payload?.error || payload?.message || payload || "Не вдалося сформувати файл.");
+    throw createApiError(response, payload, "fileBuildFailed");
   }
 
   const blob = await response.blob();
@@ -115,9 +162,20 @@ export async function fetchFile(path, request, format) {
   return { blob, fileName };
 }
 
+function queryString(query) {
+  const params = new URLSearchParams();
+  Object.entries(query || {}).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== "") params.set(key, value);
+  });
+  const suffix = params.toString();
+  return suffix ? `?${suffix}` : "";
+}
+
 export const api = {
   auth: {
     login: body => fetchJson("/api/auth/login", { method: "POST", body: JSON.stringify(body) }),
+    googleStartUrl: returnUrl => apiUrl(`/api/auth/google/start${returnUrl ? `?returnUrl=${encodeURIComponent(returnUrl)}` : ""}`),
+    googleCredential: credential => fetchJson("/api/auth/google/credential", { method: "POST", body: JSON.stringify({ credential }) }),
     register: body => fetchJson("/api/auth/register", { method: "POST", body: JSON.stringify(body) }),
     verify: () => fetchJson("/api/auth/verify"),
     logout: refreshToken => fetchJson("/api/auth/logout", { method: "POST", body: JSON.stringify({ refreshToken }) }),
@@ -127,7 +185,9 @@ export const api = {
   },
   profile: {
     get: () => fetchJson("/api/profile"),
+    setupNickname: body => fetchJson("/api/profile/setup-nickname", { method: "POST", body: JSON.stringify(body) }),
     update: body => fetchJson("/api/profile", { method: "PUT", body: JSON.stringify(body) }),
+    requestDeletionCode: body => fetchJson("/api/profile/delete-code", { method: "POST", body: JSON.stringify(body) }),
     uploadPhoto: file => {
       const form = new FormData();
       form.append("file", file);
@@ -164,6 +224,7 @@ export const api = {
   subscriptions: {
     list: () => fetchJson("/api/subscriptions"),
     create: body => fetchJson("/api/subscriptions", { method: "POST", body: JSON.stringify(body) }),
+    update: (id, body) => fetchJson(`/api/subscriptions/${id}`, { method: "PUT", body: JSON.stringify(body) }),
     delete: id => fetchJson(`/api/subscriptions/${id}`, { method: "DELETE" })
   },
   chat: {
@@ -173,13 +234,13 @@ export const api = {
   },
   report: request => fetchFile("/api/reports/fuel-prices/export", request, request.format),
   admin: {
-    users: () => fetchJson("/api/admin/users"),
+    users: query => fetchJson(`/api/admin/users${queryString(query)}`),
     updateUserRole: (id, role) => fetchJson(`/api/admin/users/${id}/role`, { method: "PUT", body: JSON.stringify({ role }) }),
     deleteUser: id => fetchJson(`/api/admin/users/${id}`, { method: "DELETE" }),
-    comments: () => fetchJson("/api/admin/comments"),
+    comments: query => fetchJson(`/api/admin/comments${queryString(query)}`),
     updateComment: (id, body) => fetchJson(`/api/admin/comments/${id}`, { method: "PUT", body: JSON.stringify(body) }),
     deleteComment: id => fetchJson(`/api/admin/comments/${id}`, { method: "DELETE" }),
-    apiTokens: () => fetchJson("/api/admin/api-tokens"),
+    apiTokens: query => fetchJson(`/api/admin/api-tokens${queryString(query)}`),
     createApiToken: body => fetchJson("/api/admin/api-tokens", { method: "POST", body: JSON.stringify(body) }),
     revokeApiToken: id => fetchJson(`/api/admin/api-tokens/${id}`, { method: "DELETE" }),
     deleteApiToken: id => fetchJson(`/api/admin/api-tokens/${id}/permanent`, { method: "DELETE" }),

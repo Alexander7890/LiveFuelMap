@@ -1,5 +1,6 @@
 import { Check, Search, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Button, Card } from "../common/Ui";
 import { useData } from "../../contexts/DataContext";
 import { useToast } from "../../contexts/ToastContext";
@@ -17,6 +18,7 @@ function priceTone(value, stats) {
 }
 
 export default function StationComparison() {
+  const { t } = useTranslation();
   const { stations, fuels } = useData();
   const { showToast } = useToast();
   const [selected, setSelected] = useState([]);
@@ -83,7 +85,7 @@ export default function StationComparison() {
     setSelected(current => {
       if (current.includes(stationId)) return current.filter(item => item !== stationId);
       if (current.length >= maxSelected) {
-        showToast("Ліміт порівняння", `Можна обрати до ${maxSelected} АЗС одночасно.`, "warning");
+        showToast(t("comparison.limitTitle"), t("comparison.limitMessage", { max: maxSelected }), "warning");
         return current;
       }
       return [...current, stationId];
@@ -104,7 +106,7 @@ export default function StationComparison() {
         next.push(stationId);
       }
       if (limited) {
-        showToast("Ліміт порівняння", `Додано максимум ${maxSelected} АЗС. Звузьте пошук, щоб обрати інші.`, "warning");
+        showToast(t("comparison.limitTitle"), t("comparison.limitSearchMessage", { max: maxSelected }), "warning");
       }
       return next;
     });
@@ -114,7 +116,7 @@ export default function StationComparison() {
     const next = visibleStations.slice(0, maxSelected).map(station => Number(station.id));
     setSelected(next);
     if (visibleStations.length > maxSelected) {
-      showToast("Ліміт порівняння", `Обрано перші ${maxSelected} АЗС із ${visibleStations.length}.`, "warning");
+      showToast(t("comparison.limitTitle"), t("comparison.limitFirstMessage", { max: maxSelected, count: visibleStations.length }), "warning");
     }
   }
 
@@ -185,7 +187,7 @@ export default function StationComparison() {
     try {
       setResult(await api.compare(selected.map(Number)));
     } catch (error) {
-      showToast("Порівняння недоступне", error.message, "danger");
+      showToast(t("comparison.unavailableTitle"), error.message, "danger");
     } finally {
       setLoading(false);
     }
@@ -195,22 +197,22 @@ export default function StationComparison() {
     <Card className="grid select-none gap-5">
       <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
         <div>
-          <h3 className="text-lg font-black">Порівняння АЗС</h3>
-          <p className="text-sm text-slate-500">Оберіть 2-{maxSelected} станцій, порівняйте ціни й швидко побачте найдешевші та найдорожчі позиції.</p>
+          <h3 className="text-lg font-black">{t("comparison.title")}</h3>
+          <p className="text-sm text-slate-500">{t("comparison.subtitle", { max: maxSelected })}</p>
         </div>
-        <Button type="button" onClick={compare} loading={loading} disabled={selected.length < 2}>Порівняти</Button>
+        <Button type="button" className="w-full md:w-auto" onClick={compare} loading={loading} disabled={selected.length < 2}>{t("comparison.compare")}</Button>
       </div>
 
       <div className="grid gap-4 lg:grid-cols-[minmax(280px,360px)_1fr]">
         <div className="rounded-2xl border border-slate-200 bg-white/65 p-3 dark:border-slate-800 dark:bg-slate-950/35">
           <label className="relative block">
             <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
-            <input className="field pl-9" value={query} onChange={event => setQuery(event.target.value)} placeholder="Пошук АЗС" />
+            <input className="field pl-9" value={query} onChange={event => setQuery(event.target.value)} placeholder={t("comparison.search")} />
           </label>
-          <div className="mt-3 flex flex-wrap gap-2">
-            <Button type="button" variant="secondary" onClick={selectAll}>Обрати всі</Button>
-            <Button type="button" variant="secondary" onClick={selectVisible}>Додати з пошуку</Button>
-            <Button type="button" variant="ghost" onClick={() => setSelected([])}>Очистити</Button>
+          <div className="mt-3 grid gap-2 sm:flex sm:flex-wrap">
+            <Button type="button" variant="secondary" onClick={selectAll}>{t("comparison.selectAll")}</Button>
+            <Button type="button" variant="secondary" onClick={selectVisible}>{t("comparison.addFromSearch")}</Button>
+            <Button type="button" variant="ghost" onClick={() => setSelected([])}>{t("comparison.clear")}</Button>
           </div>
           <div
             ref={stationListRef}
@@ -252,11 +254,11 @@ export default function StationComparison() {
         <div className="grid content-start gap-4">
           <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-3 dark:border-slate-800 dark:bg-slate-900/60">
             <div className="mb-2 flex items-center justify-between gap-3">
-              <span className="text-sm font-bold">Обрано: {selected.length}/{maxSelected}</span>
-              {selected.length >= 2 && <span className="text-xs text-slate-500">Готово до порівняння</span>}
+              <span className="text-sm font-bold">{t("comparison.selected", { count: selected.length, max: maxSelected })}</span>
+              {selected.length >= 2 && <span className="text-xs text-slate-500">{t("comparison.ready")}</span>}
             </div>
             <div className="flex flex-wrap gap-2">
-              {selectedStations.length === 0 && <span className="text-sm text-slate-500">Позначте АЗС у списку ліворуч.</span>}
+              {selectedStations.length === 0 && <span className="text-sm text-slate-500">{t("comparison.emptySelection")}</span>}
               {selectedStations.map(station => (
                 <button key={station.id} type="button" className="badge-soft transition hover:-translate-y-0.5" onClick={() => toggle(station.id)}>
                   <Check className="h-3.5 w-3.5" /> {station.name} <X className="h-3.5 w-3.5" />
@@ -270,7 +272,7 @@ export default function StationComparison() {
               <table className="data-table">
                 <thead>
                   <tr>
-                    <th>АЗС</th>
+                    <th>{t("common.stations")}</th>
                     {fuels.map(fuel => <th key={fuel.id}>{fuel.name}</th>)}
                   </tr>
                 </thead>
@@ -283,7 +285,7 @@ export default function StationComparison() {
                         return (
                           <td key={fuel.id}>
                             <span className={`inline-flex min-w-24 justify-center rounded-full px-3 py-1 text-xs font-black ${priceTone(value, priceStats[fuel.id])}`}>
-                              {Number.isFinite(value) ? `${formatPrice(value)} грн` : "-"}
+                              {Number.isFinite(value) ? `${formatPrice(value)} ${t("common.currencyShort")}` : "-"}
                             </span>
                           </td>
                         );
@@ -293,9 +295,9 @@ export default function StationComparison() {
                 </tbody>
               </table>
               <div className="mt-3 flex flex-wrap gap-2 text-xs font-semibold">
-                <span className="rounded-full bg-emerald-50 px-3 py-1 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-200">найнижча ціна</span>
-                <span className="rounded-full bg-amber-50 px-3 py-1 text-amber-700 dark:bg-amber-500/10 dark:text-amber-200">середній рівень</span>
-                <span className="rounded-full bg-rose-50 px-3 py-1 text-rose-700 dark:bg-rose-500/10 dark:text-rose-200">найвища ціна</span>
+                <span className="rounded-full bg-emerald-50 px-3 py-1 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-200">{t("comparison.lowest")}</span>
+                <span className="rounded-full bg-amber-50 px-3 py-1 text-amber-700 dark:bg-amber-500/10 dark:text-amber-200">{t("comparison.average")}</span>
+                <span className="rounded-full bg-rose-50 px-3 py-1 text-rose-700 dark:bg-rose-500/10 dark:text-rose-200">{t("comparison.highest")}</span>
               </div>
             </div>
           )}

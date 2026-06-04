@@ -11,6 +11,10 @@ public sealed class User
     public string? Nickname { get; set; }
     public string? NormalizedNickname { get; set; }
     public string? ProfileImageUrl { get; set; }
+    public string AuthProvider { get; set; } = "Local";
+    public string? ExternalProviderId { get; set; }
+    public string? GoogleName { get; set; }
+    public bool RequiresNicknameSetup { get; set; }
     public UserRole Role { get; set; } = UserRole.User;
     public bool EmailConfirmed { get; set; }
     public string? EmailConfirmationTokenHash { get; set; }
@@ -21,7 +25,12 @@ public sealed class User
     public string? RefreshTokenHash { get; set; }
     public DateTime? RefreshTokenExpiresAt { get; set; }
     public DateTime? RefreshTokenRevokedAt { get; set; }
+    public string? AccountDeletionTokenHash { get; set; }
+    public DateTime? AccountDeletionTokenExpiresAt { get; set; }
+    public DateTime? LastAccountDeletionTokenSentAt { get; set; }
     public int TokenVersion { get; set; }
+    public bool IsDeleted { get; set; }
+    public DateTime? DeletedAt { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime? LastLoginAt { get; set; }
 
@@ -85,9 +94,14 @@ public sealed class Subscription
     public int Id { get; set; }
     public int UserId { get; set; }
     public int FuelId { get; set; }
+    public string Email { get; set; } = string.Empty;
     public string City { get; set; } = string.Empty;
     public SubscriptionFrequency Frequency { get; set; } = SubscriptionFrequency.Daily;
+    public TimeSpan SendTime { get; set; } = new(9, 0, 0);
+    public bool IsActive { get; set; } = true;
+    public DateTime? LastSentAt { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    public DateTime? UpdatedAt { get; set; }
 
     public User User { get; set; } = null!;
     public Fuel Fuel { get; set; } = null!;

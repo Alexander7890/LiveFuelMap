@@ -26,6 +26,7 @@ public static class DependencyInjection
         services.AddScoped<IFuelPriceImportService, ValidatedFuelPriceImportService>();
         services.AddScoped<IChatService, ChatService>();
         services.AddScoped<IChatContextService, ChatContextService>();
+        services.AddSingleton<IChatIntentRecognitionService, ChatIntentRecognitionService>();
         services.TryAddScoped<IExternalAutomotiveContextService, NoopExternalAutomotiveContextService>();
         services.AddSingleton<IChatTopicGuard, ChatTopicGuard>();
         services.AddSingleton<IFuelNormalizer, UnicodeFuelNormalizer>();

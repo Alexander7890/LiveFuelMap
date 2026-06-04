@@ -134,7 +134,7 @@ public sealed class LivePresenceTracker
 public sealed class SignalRFuelUpdatesNotifier(
     IHubContext<FuelHub> hubContext,
     IFuelDataService fuelDataService,
-    IPriceChangeEmailNotifier emailNotifier) : IFuelUpdatesNotifier
+    ISubscriptionNotificationQueue subscriptionNotificationQueue) : IFuelUpdatesNotifier
 {
     public Task NotifyFuelDataUpdatedAsync(CancellationToken cancellationToken = default) =>
         NotifyFuelDataUpdatedAsync([], cancellationToken);
@@ -151,6 +151,6 @@ public sealed class SignalRFuelUpdatesNotifier(
         foreach (var change in priceChanges)
             await hubContext.Clients.All.SendAsync("priceChanged", change, cancellationToken);
 
-        await emailNotifier.NotifyAsync(priceChanges, cancellationToken);
+        subscriptionNotificationQueue.QueuePriceChanges(priceChanges);
     }
 }

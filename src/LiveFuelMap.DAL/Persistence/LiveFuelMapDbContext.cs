@@ -34,15 +34,24 @@ public sealed class LiveFuelMapDbContext(DbContextOptions<LiveFuelMapDbContext> 
             entity.Property(x => x.Nickname).HasMaxLength(32);
             entity.Property(x => x.NormalizedNickname).HasMaxLength(32);
             entity.Property(x => x.ProfileImageUrl).HasMaxLength(500);
+            entity.Property(x => x.AuthProvider).HasMaxLength(32).HasDefaultValue("Local").IsRequired();
+            entity.Property(x => x.ExternalProviderId).HasMaxLength(255);
+            entity.Property(x => x.GoogleName).HasMaxLength(100);
+            entity.Property(x => x.RequiresNicknameSetup).HasDefaultValue(false);
             entity.Property(x => x.Role).HasConversion<string>().HasMaxLength(32).IsRequired();
             entity.Property(x => x.EmailConfirmationTokenHash).HasMaxLength(255);
             entity.Property(x => x.PasswordResetTokenHash).HasMaxLength(255);
             entity.Property(x => x.RefreshTokenHash).HasMaxLength(255);
+            entity.Property(x => x.AccountDeletionTokenHash).HasMaxLength(255);
             entity.Property(x => x.TokenVersion).HasDefaultValue(0);
+            entity.Property(x => x.IsDeleted).HasDefaultValue(false);
             entity.Property(x => x.CreatedAt).HasDefaultValueSql(currentTimestampSql);
             entity.HasIndex(x => x.Email).IsUnique();
             entity.HasIndex(x => x.NormalizedNickname).IsUnique();
+            entity.HasIndex(x => new { x.AuthProvider, x.ExternalProviderId });
             entity.HasIndex(x => x.RefreshTokenHash).IsUnique();
+            entity.HasIndex(x => x.IsDeleted);
+            entity.HasIndex(x => x.RequiresNicknameSetup);
         });
 
         modelBuilder.Entity<Station>(entity =>
@@ -88,12 +97,16 @@ public sealed class LiveFuelMapDbContext(DbContextOptions<LiveFuelMapDbContext> 
         modelBuilder.Entity<Subscription>(entity =>
         {
             entity.ToTable("subscriptions");
+            entity.Property(x => x.Email).HasMaxLength(255);
             entity.Property(x => x.City).HasMaxLength(100).IsRequired();
             entity.Property(x => x.Frequency).HasConversion<string>().HasMaxLength(16).IsRequired();
+            entity.Property(x => x.SendTime).HasColumnType("time").IsRequired();
+            entity.Property(x => x.IsActive).HasDefaultValue(true);
             entity.Property(x => x.CreatedAt).HasDefaultValueSql(currentTimestampSql);
             entity.HasOne(x => x.User).WithMany(x => x.Subscriptions).HasForeignKey(x => x.UserId).OnDelete(DeleteBehavior.Cascade);
             entity.HasOne(x => x.Fuel).WithMany(x => x.Subscriptions).HasForeignKey(x => x.FuelId).OnDelete(DeleteBehavior.Cascade);
-            entity.HasIndex(x => new { x.UserId, x.FuelId, x.City, x.Frequency }).IsUnique();
+            entity.HasIndex(x => new { x.UserId, x.FuelId, x.City }).IsUnique();
+            entity.HasIndex(x => new { x.Frequency, x.IsActive, x.SendTime });
         });
 
         modelBuilder.Entity<Comment>(entity =>

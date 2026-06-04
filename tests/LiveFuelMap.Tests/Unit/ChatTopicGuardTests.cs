@@ -52,6 +52,15 @@ public sealed class ChatTopicGuardTests
     }
 
     [Fact]
+    public void Check_AllowsRussianRouteDistanceQuestionWithTypo()
+    {
+        var result = _guard.Check("Какое растояние от Харькова до Львова?");
+
+        Assert.True(result.IsAllowed);
+        Assert.Equal("route-distance", result.Intent);
+    }
+
+    [Fact]
     public void Check_AllowsCarBuyingQuestion()
     {
         var result = _guard.Check("Яку машину купити за 600к грн?");

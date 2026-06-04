@@ -20,8 +20,13 @@ coverage/
 Thumbs.db
 appsettings.Production.json
 .env
+.env.*
+!.env.example
+frontend/.env
+frontend/.env.*
 node_modules/
 frontend/dist/
 frontend/.vite/
 frontend/public-react/
+frontend/public/uploads/
 .tools/

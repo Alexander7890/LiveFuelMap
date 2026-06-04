@@ -41,6 +41,20 @@ public sealed class ProfileController(IProfileService profileService, IWebHostEn
         }
     }
 
+    [HttpPost("setup-nickname")]
+    public async Task<IActionResult> SetupNickname(SetupNicknameRequest request, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var userId = int.Parse(User.FindFirstValue(JwtRegisteredClaimNames.Sub)!);
+            return Ok(await profileService.SetupNicknameAsync(userId, request, cancellationToken));
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { error = ex.Message });
+        }
+    }
+
     [HttpPost("photo")]
     [Consumes("multipart/form-data")]
     [RequestSizeLimit(2_000_000)]
@@ -79,6 +93,21 @@ public sealed class ProfileController(IProfileService profileService, IWebHostEn
             var userId = int.Parse(User.FindFirstValue(JwtRegisteredClaimNames.Sub)!);
             var imageUrl = $"/uploads/profiles/{fileName}";
             return Ok(await profileService.UpdateAsync(userId, new UpdateProfileRequest(null, null, imageUrl), cancellationToken));
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { error = ex.Message });
+        }
+    }
+
+    [HttpPost("delete-code")]
+    public async Task<IActionResult> RequestDeleteCode(DeleteAccountVerificationRequest request, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var userId = int.Parse(User.FindFirstValue(JwtRegisteredClaimNames.Sub)!);
+            await profileService.RequestDeletionCodeAsync(userId, request, cancellationToken);
+            return NoContent();
         }
         catch (InvalidOperationException ex)
         {

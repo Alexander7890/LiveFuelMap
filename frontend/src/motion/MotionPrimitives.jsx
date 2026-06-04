@@ -4,6 +4,10 @@ import gsap from "gsap";
 import { cx } from "../utils/format";
 import { premiumEase, revealVariants, staggerContainer, staggerItem } from "./presets";
 
+function createMotionComponent(Component) {
+  return motion.create(Component);
+}
+
 export function Reveal({
   as: Component = "div",
   direction = "up",
@@ -15,7 +19,7 @@ export function Reveal({
   ...props
 }) {
   const reduceMotion = useReducedMotion();
-  const MotionComponent = useMemo(() => motion(Component), [Component]);
+  const MotionComponent = useMemo(() => createMotionComponent(Component), [Component]);
 
   if (reduceMotion) {
     return <Component className={className} {...props}>{children}</Component>;
@@ -39,7 +43,7 @@ export function Reveal({
 
 export function Stagger({ as: Component = "div", className, children, once = true, amount = 0.16, ...props }) {
   const reduceMotion = useReducedMotion();
-  const MotionComponent = useMemo(() => motion(Component), [Component]);
+  const MotionComponent = useMemo(() => createMotionComponent(Component), [Component]);
 
   if (reduceMotion) {
     return <Component className={className} {...props}>{children}</Component>;
@@ -61,7 +65,7 @@ export function Stagger({ as: Component = "div", className, children, once = tru
 
 export function StaggerItem({ as: Component = "div", className, children, ...props }) {
   const reduceMotion = useReducedMotion();
-  const MotionComponent = useMemo(() => motion(Component), [Component]);
+  const MotionComponent = useMemo(() => createMotionComponent(Component), [Component]);
 
   if (reduceMotion) {
     return <Component className={className} {...props}>{children}</Component>;
@@ -144,7 +148,7 @@ export function HoverLetters({ children, className }) {
           aria-hidden="true"
           key={`${letter}-${index}`}
           className="inline-block"
-          whileHover={{ y: -3, color: "#0f8b8d" }}
+          whileHover={{ y: -3 }}
           transition={{ duration: 0.22, ease: premiumEase }}
         >
           {letter === " " ? "\u00a0" : letter}

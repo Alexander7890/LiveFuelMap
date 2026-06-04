@@ -30,6 +30,7 @@ public interface IAuthService
 {
     Task RegisterAsync(RegisterRequest request, CancellationToken cancellationToken = default);
     Task<AuthResultDto> LoginAsync(LoginRequest request, CancellationToken cancellationToken = default);
+    Task<AuthResultDto> LoginWithGoogleAsync(GoogleAccountDto googleAccount, CancellationToken cancellationToken = default);
     Task<AuthResultDto> RefreshAsync(RefreshTokenRequest request, CancellationToken cancellationToken = default);
     Task LogoutAsync(int userId, LogoutRequest request, CancellationToken cancellationToken = default);
     Task ChangePasswordAsync(int userId, ChangePasswordRequest request, CancellationToken cancellationToken = default);
@@ -39,10 +40,26 @@ public interface IAuthService
     Task<CurrentUserDto> GetCurrentUserAsync(int userId, CancellationToken cancellationToken = default);
 }
 
+public interface IGoogleOAuthClient
+{
+    string CreateAuthorizationUrl(string? returnUrl = null);
+    string CreateFrontendCallbackUrl(AuthResultDto result, string? returnUrl = null);
+    string CreateFrontendErrorUrl(string error, string? returnUrl = null);
+    Task<(GoogleAccountDto Account, string? ReturnUrl)> ExchangeCodeAsync(string code, string state, CancellationToken cancellationToken = default);
+    Task<GoogleAccountDto> ValidateCredentialAsync(string credential, CancellationToken cancellationToken = default);
+}
+
+public interface ICaptchaVerificationService
+{
+    Task VerifyAsync(string? captchaToken, CancellationToken cancellationToken = default);
+}
+
 public interface IProfileService
 {
     Task<ProfileDto> GetAsync(int userId, CancellationToken cancellationToken = default);
+    Task<ProfileDto> SetupNicknameAsync(int userId, SetupNicknameRequest request, CancellationToken cancellationToken = default);
     Task<ProfileDto> UpdateAsync(int userId, UpdateProfileRequest request, CancellationToken cancellationToken = default);
+    Task RequestDeletionCodeAsync(int userId, DeleteAccountVerificationRequest request, CancellationToken cancellationToken = default);
     Task DeleteAsync(int userId, DeleteAccountRequest request, CancellationToken cancellationToken = default);
 }
 
@@ -63,6 +80,7 @@ public interface IFuelPriceReportService
 
 public interface ICommentService
 {
+    Task<PagedResult<AdminCommentDto>> ListAdminAsync(CommentAdminQuery query, CancellationToken cancellationToken = default);
     Task<IReadOnlyList<CommentDto>> ListAsync(int? stationId = null, string? search = null, int take = 200, CancellationToken cancellationToken = default);
     Task<IReadOnlyList<CommentDto>> GetByStationAsync(int stationId, CancellationToken cancellationToken = default);
     Task<CommentDto> CreateAsync(int userId, CreateCommentRequest request, CancellationToken cancellationToken = default);
@@ -82,14 +100,15 @@ public interface IStationAdminService
 public interface ISubscriptionService
 {
     Task<IReadOnlyList<SubscriptionDto>> ListAsync(int userId, CancellationToken cancellationToken = default);
-    Task CreateAsync(int userId, SubscriptionRequest request, CancellationToken cancellationToken = default);
+    Task<IReadOnlyList<SubscriptionDto>> CreateAsync(int userId, SubscriptionRequest request, CancellationToken cancellationToken = default);
+    Task<SubscriptionDto?> UpdateAsync(int userId, int id, SubscriptionRequest request, CancellationToken cancellationToken = default);
     Task<bool> DeleteAsync(int userId, int id, CancellationToken cancellationToken = default);
 }
 
 public interface IApiTokenService
 {
     Task<ApiTokenCreatedDto> CreateAsync(int adminUserId, ApiTokenCreateRequest request, CancellationToken cancellationToken = default);
-    Task<IReadOnlyList<ApiTokenDto>> ListAsync(CancellationToken cancellationToken = default);
+    Task<PagedResult<ApiTokenDto>> ListAsync(ApiTokenQuery query, CancellationToken cancellationToken = default);
     Task<bool> RevokeAsync(int id, CancellationToken cancellationToken = default);
     Task<bool> DeleteAsync(int id, CancellationToken cancellationToken = default);
     Task<bool> ValidateAsync(string token, string requiredScope, CancellationToken cancellationToken = default);
@@ -97,7 +116,7 @@ public interface IApiTokenService
 
 public interface IUserAdminService
 {
-    Task<IReadOnlyList<UserAdminDto>> ListAsync(CancellationToken cancellationToken = default);
+    Task<PagedResult<UserAdminDto>> ListAsync(UserAdminQuery query, CancellationToken cancellationToken = default);
     Task<UserAdminDto?> UpdateRoleAsync(int userId, UserRole role, CancellationToken cancellationToken = default);
     Task<bool> DeleteAsync(int userId, int currentAdminUserId, CancellationToken cancellationToken = default);
 }
@@ -156,6 +175,20 @@ public interface IPriceChangeEmailNotifier
 public interface ISubscriptionEmailNotifier
 {
     Task NotifySubscriptionCreatedAsync(int userId, int subscriptionId, CancellationToken cancellationToken = default);
+    Task NotifyDueScheduledAsync(DateTime utcNow, CancellationToken cancellationToken = default);
+}
+
+public sealed record SubscriptionNotificationJob(
+    string Type,
+    int? UserId = null,
+    int? SubscriptionId = null,
+    IReadOnlyList<PriceChangeNotificationDto>? PriceChanges = null);
+
+public interface ISubscriptionNotificationQueue
+{
+    void QueueSubscriptionCreated(int userId, int subscriptionId);
+    void QueuePriceChanges(IReadOnlyList<PriceChangeNotificationDto> priceChanges);
+    ValueTask<SubscriptionNotificationJob> DequeueAsync(CancellationToken cancellationToken = default);
 }
 
 public interface IApiMetrics
@@ -181,9 +214,15 @@ public interface IChatContextService
     Task<ChatContextResult> BuildContextAsync(ChatRequest request, ChatTopicDecision topic, CancellationToken cancellationToken = default);
 }
 
+public interface IChatIntentRecognitionService
+{
+    ChatIntentAnalysisDto Analyze(ChatRequest request, string message, bool usesConversationContext = false);
+}
+
 public interface IExternalAutomotiveContextService
 {
     Task<string> BuildContextAsync(ChatRequest request, ChatTopicDecision topic, CancellationToken cancellationToken = default);
+    Task<string?> BuildDirectAnswerAsync(ChatRequest request, ChatTopicDecision topic, CancellationToken cancellationToken = default);
 }
 
 public interface IAiChatClient
